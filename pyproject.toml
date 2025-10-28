@@ -8,7 +8,9 @@ dependencies = [
     "datasets>=4.2.0",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
+    "pandas>=2.3.3",
     "pillow>=12.0.0",
+    "rich>=14.2.0",
     "torch>=2.9.0",
     "torchvision>=0.24.0",
 ]
@@ -18,3 +20,109 @@ where = ["src"]
 
 [tool.uv]
 package = true
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.140.3",
+    "ipywidgets>=8.1.7",
+    "jupyter>=1.1.1",
+    "pre-commit>=4.3.0",
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.0",
+]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]  # directory containing your tests
+norecursedirs = [
+    ".vscode",
+    "__pycache__"
+]
+# Warnings that should be ignored
+filterwarnings = [
+    # "ignore::DeprecationWarning" # ?
+]
+# custom markers that can be used using pytest.mark
+markers = [
+    "slow: lower-importance tests that take an excessive amount of time",
+]
+# ?
+# python_files = "test_*.py"
+# python_functions = "test_*"
+# addopts = "-v --cov --cov-report=html --cov-report=term"
+# ?
+
+[tool.ruff]
+line-length = 100
+# show-source = true # ?
+
+# Rules: https://beta.ruff.rs/docs/rules
+# If you violate a rule, lookup the rule on the Rules page in ruff docs.
+# Many rules have links you can click with a explanation of the rule and how to fix it.
+# If there isn't a link, go to the project the rule was source from (e.g. flake8-bugbear)
+# and review it's docs for the corresponding rule.
+# If you're still confused, ask a fellow developer for assistance.
+# You can also run "ruff rule <rule>" to explain a rule on the command line, without a browser or internet access.
+lint.select = [
+    "E",    # pycodestyle
+    "F",    # Pyflakes
+    "W",    # Warning
+    "B",    # flake8-bugbear
+    "A",    # flake8-builtins
+    "C4",   # flake8-comprehensions
+    "T10",  # flake8-debugger
+    "EXE",  # flake8-executable,
+    "ISC",  # flake8-implicit-str-concat
+    "G",    # flake8-logging-format
+    "PIE",  # flake8-pie
+    "T20",  # flake8-print
+    "PT",   # flake8-pytest-style
+    "RSE",  # flake8-raise
+    "RET",  # flake8-return
+    "TID",  # flake8-tidy-imports
+    "ARG",  # flake8-unused-arguments
+    "PGH",  # pygrep-hooks
+    "PLC",  # Pylint Convention
+    "PLE",  # Pylint Errors
+    "PLW",  # Pylint Warnings
+    "RUF",  # Ruff-specific rules
+
+    # ** Things to potentially enable in the future **
+    # DTZ requires all usage of datetime module to have timezone-aware
+    # objects (so have a tz argument or be explicitly UTC).
+    # "DTZ",  # flake8-datetimez
+    # "PTH",  # flake8-use-pathlib
+    # "SIM",  # flake8-simplify
+]
+
+# Linting error codes to ignore
+lint.ignore = [
+    "F403",    # unable to detect undefined names from star imports
+    "F405",    # undefined locals from star imports
+    "W605",    # invalid escape sequence
+    "A003",    # shadowing python builtins
+    "RET505",  # unnecessary 'else' after 'return' statement
+    "RET504",  # Unnecessary variable assignment before return statement
+    "RET507",  # Unnecessary {branch} after continue statement
+    "PT011",   # pytest-raises-too-broad
+    "PT012",   # pytest.raises() block should contain a single simple statement
+    "PLW0603", # Using the global statement to update is discouraged
+    "PLW2901", # for loop variable overwritten by assignment target
+    "G004",    # Logging statement uses f-string
+    "PIE790",  # no-unnecessary-pass
+    "PIE810",  # multiple-starts-ends-with
+    "PGH003",  # Use specific rule codes when ignoring type issues
+    "PLC1901", # compare-to-empty-string
+]
+
+# Files to exclude from linting
+extend-exclude = [
+    "*.pyc",
+    "__pycache__",
+]
+
+# Linting error codes to ignore on a per-file basis
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "E501"]
+"tests/**" = ["T20", "PLC0415", "F401"]  # suppress print and import in tests
