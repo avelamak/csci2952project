@@ -2,7 +2,7 @@
 
 ## Setup
 
-We are using `uv` as a package manager, see [here](https://docs.astral.sh/uv/getting-started/installation/) for installation. 
+We are using `uv` as a package manager, see [here](https://docs.astral.sh/uv/getting-started/installation/) for installation.
 
 Run the following to setup
 
