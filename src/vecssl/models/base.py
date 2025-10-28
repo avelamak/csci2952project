@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 import torch
 import torch.nn as nn
@@ -23,7 +23,7 @@ class JointModel(nn.Module):
         raise NotImplementedError
 
     # Editing
-    def to_z_edit(self, batch: Dict[str, Any]) -> torch.Tensor:
+    def to_z_edit(self, batch: dict[str, Any]) -> torch.Tensor:
         """Optional. Returns z_edit [B, d_edit] from inputs (e.g., svg)."""
         raise NotImplementedError
 
