@@ -19,9 +19,11 @@ repos:
     hooks:
       - id: ruff-format
         types_or: [ python, pyi ]
+        exclude: ^jz_test/
       - id: ruff-check
         types_or: [ python, pyi ]
         args: [--fix]
+        exclude: ^jz_test/
 
   # ! Opinionated - strip notebooks
   - repo: https://github.com/kynan/nbstripout
