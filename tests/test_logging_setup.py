@@ -56,9 +56,15 @@ def test_levels_work(level):
 def test_visual():
     console = setup_logging(level="INFO", log_file=None, reset=True)
     log = logging.getLogger("demo")
-    with make_progress(console) as prog:
-        t = prog.add_task("Train", total=10)
-        for i in range(10):
-            time.sleep(0.05)
-            prog.advance(t)
-            log.info("step %d done", i + 1)
+    progress = make_progress(console)
+    with progress:
+        epoch_task = progress.add_task("epoch", total=3)
+        for ep in range(3):
+            batch_task = progress.add_task("train", total=2)
+            for batch in range(2):
+                time.sleep(0.02)
+                progress.advance(batch_task)
+                log.info("batch %d done", batch + 1)
+            time.sleep(0.02)
+            progress.advance(epoch_task)
+            log.info("epoch %d done", ep + 1)
