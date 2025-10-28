@@ -6,13 +6,12 @@ Currently we have:
 
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 import datasets
 from datasets import load_dataset
 from torch.utils.data import Dataset
 from PIL import Image
 import io
-import torch
 import torchvision.transforms as transforms
 
 
