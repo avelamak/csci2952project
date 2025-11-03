@@ -36,4 +36,11 @@ class ContrastiveModel(JointModel):
         # average the two losses
         loss = (loss_image + loss_svg) / 2
 
-        return TrainStep(loss=loss, logs={"loss": loss.item(), "loss_image": loss_image.item(), "loss_svg": loss_svg.item()})
+        return TrainStep(
+            loss=loss,
+            logs={
+                "loss": loss.item(),
+                "loss_image": loss_image.item(),
+                "loss_svg": loss_svg.item(),
+            },
+        )
