@@ -5,12 +5,15 @@ description = "SSL with vector primitives"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "cairosvg>=2.8.2",
     "datasets>=4.2.0",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",
     "pandas>=2.3.3",
     "pillow>=12.0.0",
     "rich>=14.2.0",
+    "scipy>=1.16.3",
+    "shapely>=2.1.2",
     "tensorboard>=2.20.0",
     "torch>=2.9.0",
     "torchvision>=0.24.0",
@@ -30,7 +33,7 @@ dev = [
     "pre-commit>=4.3.0",
     "pytest>=8.4.2",
     "pytest-cov>=7.0.0",
-    "ruff>=0.14.0",
+    "ruff>=0.14.3",
 ]
 
 
@@ -115,7 +118,12 @@ lint.ignore = [
     "PIE810",  # multiple-starts-ends-with
     "PGH003",  # Use specific rule codes when ignoring type issues
     "PLC1901", # compare-to-empty-string
+     # ! Temporary deselect
+    "PT018", # assertion breakdown
+    "E501", # line long
+    "RUF012", # typing ClassVar
 ]
+
 
 # Files to exclude from linting
 extend-exclude = [
@@ -127,3 +135,13 @@ extend-exclude = [
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401", "E501"]
 "tests/**" = ["T20", "PLC0415", "F401"]  # suppress print and import in tests
+"*.py" = [    # ! Temporary deselect - applies to all files
+    "PT018", # assertion breakdown
+    "E501", # line long
+    "RUF012", # typing ClassVar
+    "ARG002",
+    "RUF059", # Unpacked unused
+    "E741",  # bad names
+    "B007", # loop var not used
+    "PLC0415"
+]

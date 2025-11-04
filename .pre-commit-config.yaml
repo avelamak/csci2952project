@@ -15,14 +15,14 @@ repos:
       - id: no-commit-to-branch  # thou shall not commit to main
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.14.0
+    rev: v0.14.3
     hooks:
       - id: ruff-format
         types_or: [ python, pyi ]
         exclude: ^jz_test/
-      - id: ruff-check
+      - id: ruff
         types_or: [ python, pyi ]
-        args: [--fix]
+        args: ["--config=pyproject.toml", "--fix"]
         exclude: ^jz_test/
 
   # ! Opinionated - strip notebooks

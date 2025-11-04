@@ -7,6 +7,28 @@ from pathlib import Path
 import torch
 
 from vecssl.data.dataset import SVGXDataset
+from vecssl.data.svg_tensor import SVGTensor
+from vecssl.data.svg import SVG
+from vecssl.data.geom import Bbox
+
+
+def custom_collate(batch):
+    """Custom collate function that handles SVGTensor objects"""
+    # Separate SVGTensor objects from tensors
+    collated = {}
+
+    # Stack tensors normally
+    collated["commands"] = torch.stack([item["commands"] for item in batch])
+    collated["args"] = torch.stack([item["args"] for item in batch])
+    collated["image"] = torch.stack([item["image"] for item in batch])
+
+    # Keep SVGTensor objects and strings as lists
+    collated["tensors"] = [item["tensors"] for item in batch]
+    collated["uuid"] = [item["uuid"] for item in batch]
+    collated["name"] = [item["name"] for item in batch]
+    collated["source"] = [item["source"] for item in batch]
+
+    return collated
 
 
 def visualize_samples(
@@ -17,14 +39,17 @@ def visualize_samples(
     save_path: Optional[str] = None,
 ):
     if indices is None:
-        indices = list(range(num_samples))
+        indices = list(range(min(num_samples, len(dataset))))
     else:
+        # Only use valid indices
+        indices = [idx for idx in indices if idx < len(dataset)]
         num_samples = len(indices)
 
-    # Create subplot grid
+    # Create subplot grid for original images
     cols = min(4, num_samples)
     rows = (num_samples + cols - 1) // cols
 
+    # Figure 1: Original images
     fig, axes = plt.subplots(rows, cols, figsize=figsize)
     if num_samples == 1:
         axes = [axes]
@@ -38,42 +63,14 @@ def visualize_samples(
         sample = dataset[idx]
         ax = axes[i]
 
-        # Display image if available
         if "image" in sample:
             img = sample["image"]
-
-            # Convert tensor to numpy array for visualization
             if isinstance(img, torch.Tensor):
-                # Convert from (C, H, W) to (H, W, C) and to numpy
                 img = img.permute(1, 2, 0).numpy()
-
             ax.imshow(img)
-            ax.axis("off")
+            ax.set_title(f"#{idx}", fontsize=8)
+        ax.axis("off")
 
-            # Add caption as title if available
-            caption = None
-            if "caption" in sample:
-                caption = sample["caption"]
-            elif "blip_caption" in sample:
-                caption = sample["blip_caption"]
-
-            if caption:
-                # Truncate long captions
-                if len(caption) > 60:
-                    caption = caption[:57] + "..."
-                ax.set_title(caption, fontsize=8, wrap=True)
-        else:
-            ax.text(
-                0.5,
-                0.5,
-                "No image available",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-            )
-            ax.axis("off")
-
-    # Hide extra subplots
     for i in range(num_samples, len(axes)):
         axes[i].axis("off")
 
@@ -81,9 +78,58 @@ def visualize_samples(
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"Visualization saved to {save_path}")
+        print(f"Original images saved to {save_path}")
     else:
         plt.show()
+
+    plt.close()
+
+    # Figure 2: Reconstructed SVGs
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if num_samples == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten() if rows > 1 or cols > 1 else [axes]
+
+    for i, idx in enumerate(indices):
+        if i >= len(axes):
+            break
+
+        sample = dataset[idx]
+        ax = axes[i]
+
+        nempty_tensors: list[torch.Tensor] = []
+        for j in range(len(sample["tensors"])):
+            tensor = sample["tensors"][j].copy().drop_sos().unpad()
+            if tensor.seq_len > 0:
+                nempty_tensors.append(tensor.data)
+        full_tensor = torch.cat(nempty_tensors)
+        svg_reconstructed = SVG.from_tensor(
+            full_tensor.data, viewbox=Bbox(256), allow_empty=True
+            ).normalize().split_paths().set_color("random")
+
+        img_recon = svg_reconstructed.draw(do_display=False, return_png=True)
+        ax.imshow(np.array(img_recon))
+        ax.set_title(f"Reconstructed #{idx}", fontsize=8)
+        # except Exception as e:
+        #     ax.text(0.5, 0.5, f"Error: {str(e)[:20]}", ha="center", va="center", fontsize=8)
+        #     print(f"Failed to reconstruct {idx}: {e}")
+
+        ax.axis("off")
+
+    for i in range(num_samples, len(axes)):
+        axes[i].axis("off")
+
+    plt.tight_layout()
+
+    if save_path:
+        recon_path = Path(save_path).parent / (Path(save_path).stem + "_reconstructed.png")
+        plt.savefig(recon_path, dpi=150, bbox_inches="tight")
+        print(f"Reconstructed SVGs saved to {recon_path}")
+    else:
+        plt.show()
+
+    plt.close()
 
 
 def print_sample_info(dataset, idx: int = 0):
@@ -131,7 +177,7 @@ def main():
     # Test 1: Load dataset
     print("\n[1] Loading dataset...")
     try:
-        dataset = SVGXDataset(split="train")
+        dataset = SVGXDataset(svg_dir="/Users/jz/work/csci2952project/svgx_svgs", img_dir="/Users/jz/work/csci2952project/svgx_imgs", meta_filepath="/Users/jz/work/csci2952project/svgx_meta.csv", max_num_groups=10, max_seq_len=80)
         print(f"✓ Dataset loaded successfully!")
         print(f"  Total samples: {len(dataset)}")
     except Exception as e:
@@ -140,31 +186,28 @@ def main():
 
     # Test 2: Inspect a single sample
     print("\n[2] Inspecting first sample...")
-    try:
-        print_sample_info(dataset, idx=0)
-        print("✓ Sample inspection successful!")
-    except Exception as e:
-        print(f"✗ Failed to inspect sample: {e}")
-        return
+    print_sample_info(dataset, idx=0)
+    print("✓ Sample inspection successful!")
 
     # Test 3: Create DataLoader
     print("\n[3] Creating DataLoader...")
     try:
         dataloader = DataLoader(
             dataset,
-            batch_size=2,
+            batch_size=4,
             shuffle=True,
             num_workers=1,
+            collate_fn=custom_collate,
         )
         print("✓ DataLoader created successfully!")
     except Exception as e:
         print(f"✗ Failed to create DataLoader: {e}")
         return
-
     # Test 4: Iterate through a batch
     print("\n[4] Testing batch iteration...")
-    try:
-        batch = next(iter(dataloader))
+    iterator = iter(dataloader)
+    for _ in range(2):
+        batch = next(iterator)
         print(f"✓ Successfully loaded a batch!")
         print(f"  Batch keys: {list(batch.keys())}")
         for key, value in batch.items():
@@ -174,9 +217,6 @@ def main():
                 print(f"  {key} length: {len(value)}")
             else:
                 print(f"  {key} type: {type(value)}")
-    except Exception as e:
-        print(f"✗ Failed to iterate batch: {e}")
-        return
 
     # Test 5: Visualize samples
     print("\n[5] Visualizing samples...")
@@ -187,7 +227,7 @@ def main():
         visualize_samples(
             dataset,
             num_samples=8,
-            indices=[0, 1, 2, 3, 10, 20, 30, 40],
+            indices=[0, 1, 2, 3, 4, 5, 6, 7],
             figsize=(16, 8),
             save_path=str(output_path),
         )
