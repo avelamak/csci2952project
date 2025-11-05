@@ -1,6 +1,7 @@
 """Utils for vecssl"""
 
 import logging
+import os
 from logging import FileHandler
 from typing import Optional
 from rich.console import Console
@@ -14,6 +15,8 @@ from rich.progress import (
     MofNCompleteColumn,
 )
 
+# We set a global Console variable so we
+# never double format
 _CONSOLE: Optional[Console] = None
 
 
@@ -28,10 +31,15 @@ def setup_logging(
     """
     Configure root logging with a single RichHandler (console) and optional FileHandler.
     Returns the Console so Progress can share it.
+    The log level can be overridden by setting the LOG_LEVEL environment variable.
     """
     global _CONSOLE
     if _CONSOLE is not None and not reset:
         return _CONSOLE
+
+    # Check environment variable for log level (overrides parameter)
+    env_level = os.environ.get("LOG_LEVEL", level).upper()
+
     # Single console for both logs and progress
     console = Console(stderr=True)
     # No duplicate handler unless `reset==True`
@@ -40,7 +48,7 @@ def setup_logging(
         for h in list(root.handlers):
             root.removeHandler(h)
 
-    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root.setLevel(getattr(logging, env_level, logging.INFO))
 
     # Use rich handler
     rich_handler = RichHandler(
@@ -88,3 +96,71 @@ def get_console() -> Console:
         # Use default if we forget to do setup at entry point
         return setup_logging()
     return _CONSOLE
+
+
+def linear(a, b, x, min_x, max_x):
+    """
+    b             ___________
+                /|
+               / |
+    a  _______/  |
+              |  |
+           min_x max_x
+    """
+    return a + min(max((x - min_x) / (max_x - min_x), 0), 1) * (b - a)
+
+
+def batchify(data, device):
+    return (d.unsqueeze(0).to(device) for d in data)
+
+
+def _make_seq_first(*args):
+    # N, G, S, ... -> S, G, N, ...
+    if len(args) == 1:
+        (arg,) = args
+        return arg.permute(2, 1, 0, *range(3, arg.dim())) if arg is not None else None
+    return (
+        *(arg.permute(2, 1, 0, *range(3, arg.dim())) if arg is not None else None for arg in args),
+    )
+
+
+def _make_batch_first(*args):
+    # S, G, N, ... -> N, G, S, ...
+    if len(args) == 1:
+        (arg,) = args
+        return arg.permute(2, 1, 0, *range(3, arg.dim())) if arg is not None else None
+    return (
+        *(arg.permute(2, 1, 0, *range(3, arg.dim())) if arg is not None else None for arg in args),
+    )
+
+
+def _pack_group_batch(*args):
+    # S, G, N, ... -> S, G * N, ...
+    if len(args) == 1:
+        (arg,) = args
+        return (
+            arg.reshape(arg.size(0), arg.size(1) * arg.size(2), *arg.shape[3:])
+            if arg is not None
+            else None
+        )
+    return (
+        *(
+            arg.reshape(arg.size(0), arg.size(1) * arg.size(2), *arg.shape[3:])
+            if arg is not None
+            else None
+            for arg in args
+        ),
+    )
+
+
+def _unpack_group_batch(N, *args):
+    # S, G * N, ... -> S, G, N, ...
+    if len(args) == 1:
+        (arg,) = args
+        return arg.reshape(arg.size(0), -1, N, *arg.shape[2:]) if arg is not None else None
+    return (
+        *(
+            arg.reshape(arg.size(0), -1, N, *arg.shape[2:]) if arg is not None else None
+            for arg in args
+        ),
+    )
