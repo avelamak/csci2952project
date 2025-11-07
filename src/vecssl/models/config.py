@@ -127,3 +127,11 @@ class HierarchicalSelfMatching(_DefaultConfig):
         self.encode_stages = 2
         self.decode_stages = 2
         self.self_match = True
+
+
+class JepaConfig(_DefaultConfig):
+    def __init__(self):
+        super().__init__()
+
+        self.masking_ratio = 0.75
+        self.d_joint = 1024
