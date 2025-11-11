@@ -21,6 +21,23 @@ from .utils import (
 
 from torch.nn.utils.rnn import pad_packed_sequence, pack_padded_sequence
 from scipy.optimize import linear_sum_assignment
+from transformers import AutoImageProcessor, AutoModel
+
+
+class DINOImageEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.processor = AutoImageProcessor.from_pretrained(
+            "facebook/dinov2-base", do_rescale=False
+        )
+        self.backbone = AutoModel.from_pretrained("facebook/dinov2-base")
+
+    def forward(self, x):
+        inputs = self.processor(images=x, return_tensors="pt")
+        inputs = {k: v.to(next(self.backbone.parameters()).device) for k, v in inputs.items()}
+        outputs = self.backbone(**inputs)
+        cls_token_output = outputs.last_hidden_state[:, 0, :]
+        return cls_token_output
 
 
 class SVGEmbedding(nn.Module):
