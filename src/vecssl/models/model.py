@@ -676,3 +676,68 @@ class SVGTransformer(nn.Module):
         _, args_y = self._make_valid(commands_y, args_y)
 
         return args_y
+
+
+class ImageDecoderMAE(nn.Module):
+    def __init__(self, cfg: MAEConfig, img_size=128, patch_size=16, in_chans=3):
+        super().__init__()
+        self.cfg = cfg
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.in_chans = in_chans
+        self.n_patches = (img_size // patch_size) ** 2
+
+        # Project latent embeddings (cfg.d_model) to decoder embedding space
+        self.decoder_embed = nn.Linear(cfg.decoder_embed_dim, cfg.d_model)
+
+        # Learnable mask token for missing patches
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, cfg.d_model))
+
+        # Fixed sinusoidal positional embeddings
+        self.decoder_pos_embed = nn.Parameter(
+            torch.zeros(1, self.n_patches, cfg.d_model), requires_grad=False
+        )
+
+        # Transformer decoder blocks
+        decoder_layer = nn.TransformerEncoderLayer(
+            d_model=cfg.d_model,
+            nhead=cfg.n_heads,
+            dim_feedforward=cfg.dim_feedforward,
+            dropout=cfg.dropout,
+            batch_first=True,
+        )
+        self.decoder_blocks = nn.ModuleList([decoder_layer for _ in range(cfg.n_layers_decode)])
+        self.decoder_norm = nn.LayerNorm(cfg.d_model)
+
+        # Predict patch pixels
+        self.decoder_pred = nn.Linear(cfg.d_model, patch_size * patch_size * in_chans)
+
+    def forward(self, fused_latents, mask):
+        """
+        fused_latents: [B, N_tokens, cfg.d_model] (after fusion)
+        mask: [B, N_tokens] boolean, True=masked patch
+        """
+        x = self.decoder_embed(fused_latents)
+
+        # Replace masked tokens with mask token
+        x[mask] = self.mask_token
+
+        # Add positional embeddings
+        x = x + self.decoder_pos_embed
+
+        # Pass through transformer blocks
+        for blk in self.decoder_blocks:
+            x = blk(x)
+
+        x = self.decoder_norm(x)
+
+        # Predict patch pixels
+        x = self.decoder_pred(x)  # [B, N_patches, patch_size*patch_size*3]
+
+        # Reshape to image
+        B = x.size(0)
+        p = self.patch_size
+        H = W = self.img_size
+        x = x.reshape(B, H // p, W // p, p, p, self.in_chans)
+        x = x.permute(0, 5, 1, 3, 2, 4).reshape(B, self.in_chans, H, W)
+        return x

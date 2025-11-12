@@ -1,8 +1,15 @@
-"""
-Minimal SVG Autoencoder Test Script
+# define your data loader
 
-Tests that the SVGTransformer encoder→decoder→loss pipeline works correctly.
-Ignores images for now, focuses only on SVG reconstruction.
+# set up your optimizer and your loss funcs
+
+# load your multi_mae_model
+
+# run the forward model
+
+"""
+Minimal SVG Multi_Mae Test Script
+
+Tests that the SVG Multi_Mae encoder→decoder→loss pipeline works correctly.
 """
 
 import argparse
@@ -10,21 +17,19 @@ import logging
 import sys
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.base import TrainStep
-from vecssl.models.config import _DefaultConfig
-from vecssl.models.loss import SVGLoss
+from vecssl.models.config import MAEConfig
 from vecssl.trainer import Trainer
 from vecssl.util import setup_logging
 
-from vecssl.models.model import SVGTransformer
+from vecssl.models.multi_mae import MultiMAEModel
 
 logger = logging.getLogger(__name__)
 
 
+# Should we use the same custom collation function for batching?
 def custom_collate(batch):
     """Custom collate function that handles SVGTensor objects"""
     collated = {}
@@ -43,160 +48,13 @@ def custom_collate(batch):
     return collated
 
 
-class SimpleSVGAutoencoder(nn.Module):
-    """
-    Minimal autoencoder wrapper for testing SVGTransformer.
+# write a custom trainer class:
 
-    Flow:
-        1. Encode: commands/args → latent z (+ mu, logsigma if VAE)
-        2. Decode: z → reconstructed commands/args logits
-        3. Loss: reconstruction loss (commands + args + KL if VAE)
-    """
+"""
+What should happen here?
 
-    def __init__(self, cfg: _DefaultConfig, debug_mode: bool = False):
-        super().__init__()
-        self.cfg = cfg
-        self.debug_mode = debug_mode
-        self.step_count = 0
-
-        self.model = SVGTransformer(cfg)
-
-        # Create loss function
-        self.loss_fn = SVGLoss(cfg)
-
-        # Loss weights (same as DeepSVG defaults)
-        self.loss_weights = {
-            "kl_tolerance": 0.1,
-            "loss_kl_weight": 1.0,  # Will ramp up during training
-            "loss_cmd_weight": 1.0,
-            "loss_args_weight": 2.0,
-            "loss_visibility_weight": 1.0,
-        }
-
-        logger.info("Created SimpleSVGAutoencoder:")
-        logger.info(f"  - encode_stages: {cfg.encode_stages}")
-        logger.info(f"  - decode_stages: {cfg.decode_stages}")
-        logger.info(f"  - use_vae: {cfg.use_vae}")
-        logger.info(f"  - max_num_groups: {cfg.max_num_groups}")
-        logger.info(f"  - max_seq_len: {cfg.max_seq_len}")
-        logger.info(f"  - debug_mode: {debug_mode}")
-
-    def forward(self, batch):
-        """
-        Forward pass for training.
-
-        Args:
-            batch: dict with keys:
-                - commands: [B, G, S] long tensor
-                - args: [B, G, S, n_args] long tensor
-                - (other keys ignored)
-
-        Returns:
-            TrainStep(loss, logs, extras)
-        """
-        device = next(self.parameters()).device
-
-        # Move data to device
-        commands = batch["commands"].to(device)
-        args = batch["args"].to(device)
-
-        # Debug: Print input shapes on first step
-        if self.debug_mode and self.step_count == 0:
-            logger.info("[bold yellow]Debug: Input shapes[/bold yellow]", extra={"markup": True})
-            logger.info(f"  commands: {commands.shape} dtype={commands.dtype}")
-            logger.info(f"  args: {args.shape} dtype={args.dtype}")
-
-        # Prepare model args based on config
-        if self.cfg.encode_stages == 1:
-            # Flatten for 1-stage (not implemented yet, will fail gracefully)
-            raise NotImplementedError("1-stage encoding not yet implemented in test script")
-        # 2-stage: use separated format
-        model_args = [commands, args, commands, args]  # encoder + decoder inputs
-
-        # Forward pass through model
-        try:
-            output = self.model(*model_args, params={})
-        except Exception as e:
-            logger.error(f"Model forward failed: {e}")
-            raise
-
-        # Debug: Print output shapes on first step
-        if self.debug_mode and self.step_count == 0:
-            logger.info("[bold yellow]Debug: Output shapes[/bold yellow]", extra={"markup": True})
-            for key, val in output.items():
-                if isinstance(val, torch.Tensor):
-                    logger.info(f"  {key}: {val.shape} dtype={val.dtype}")
-                else:
-                    logger.info(f"  {key}: {type(val)}")
-
-        # Compute loss
-        try:
-            loss_dict = self.loss_fn(output, labels=None, weights=self.loss_weights)
-        except Exception as e:
-            logger.error(f"Loss computation failed: {e}")
-            logger.error(f"Output keys: {output.keys()}")
-            raise
-
-        # Debug: Print loss values on first step
-        if self.debug_mode and self.step_count == 0:
-            logger.info("[bold yellow]Debug: Loss components[/bold yellow]", extra={"markup": True})
-            for key, val in loss_dict.items():
-                if isinstance(val, torch.Tensor):
-                    logger.info(f"  {key}: {val.item():.6f}")
-
-        # Extract individual losses for logging
-        logs = {
-            "loss_total": loss_dict["loss"].item(),
-        }
-
-        if "loss_kl" in loss_dict:
-            logs["loss_kl"] = loss_dict["loss_kl"].item()
-        if "loss_cmd" in loss_dict:
-            logs["loss_cmd"] = loss_dict["loss_cmd"].item()
-        if "loss_args" in loss_dict:
-            logs["loss_args"] = loss_dict["loss_args"].item()
-        if "loss_visibility" in loss_dict:
-            logs["loss_visibility"] = loss_dict["loss_visibility"].item()
-
-        self.step_count += 1
-
-        return TrainStep(loss=loss_dict["loss"], logs=logs, extras={"output": output})
-
-    def check_gradients(self):
-        """Check gradient flow through the model"""
-        gradient_info = {}
-        total_params = 0
-        params_with_grad = 0
-        max_grad = 0.0
-        min_grad = float("inf")
-
-        for name, param in self.named_parameters():
-            if param.requires_grad:
-                total_params += 1
-                if param.grad is not None:
-                    params_with_grad += 1
-                    grad_norm = param.grad.norm().item()
-                    gradient_info[name] = {
-                        "shape": tuple(param.shape),
-                        "grad_norm": grad_norm,
-                        "has_grad": True,
-                    }
-                    max_grad = max(max_grad, grad_norm)
-                    min_grad = min(min_grad, grad_norm)
-                else:
-                    gradient_info[name] = {"shape": tuple(param.shape), "has_grad": False}
-
-        summary = {
-            "total_params": total_params,
-            "params_with_grad": params_with_grad,
-            "max_grad_norm": max_grad,
-            "min_grad_norm": min_grad if min_grad != float("inf") else 0.0,
-            "gradient_flow_percentage": (params_with_grad / total_params * 100)
-            if total_params > 0
-            else 0,
-        }
-
-        return gradient_info, summary
+1) enumerate over dataloader, pass to forward
+"""
 
 
 class DebugTrainer(Trainer):
@@ -216,18 +74,19 @@ class DebugTrainer(Trainer):
 
         progress = make_progress()
         with progress:
-            epoch_task = progress.add_task("epoch", total=max_epochs)
+            epoch_task = progress.add_task("epoch_multi_mae", total=max_epochs)
             for ep in range(max_epochs):
                 self.model.train()
                 batch_task = progress.add_task("train", total=len(train_loader))
                 run = 0.0
                 for i, batch in enumerate(train_loader):
-                    with torch.amp.autocast_mode.autocast(device.type):
+                    with torch.amp.autocast_mode.autocast(device.type, enabled=False):
                         step = self.model(batch)
                         loss = step.loss
                     scaler.scale(loss).backward()
 
-                    # Check gradients on first step
+                    # Check grads
+
                     if self.check_gradients and not self.first_step_done:
                         logger.info(
                             "[bold yellow]Debug: Gradient flow check[/bold yellow]",
@@ -261,10 +120,9 @@ class DebugTrainer(Trainer):
 
                         self.first_step_done = True
 
+                    # what is the below doing?
                     if self.grad_clip:
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-
-                    # updates model weights based on gradient tape
                     scaler.step(self.optimizer)
                     scaler.update()
                     self.optimizer.zero_grad()
@@ -282,6 +140,19 @@ class DebugTrainer(Trainer):
 
                 if val_loader:
                     self.validate(val_loader, ep)
+
+
+# creates data loaders
+"""
+What does getitem return?
+A bunch of SVGTensor objects with metadata
+    This is where the args, command, and tensor matrices come from
+    What jack was talking about earlier
+
+Image tensors
+Uuid (unique identifier)
+
+"""
 
 
 def create_dataloaders(args):
@@ -319,7 +190,7 @@ def create_dataloaders(args):
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        collate_fn=custom_collate,
+        collate_fn=custom_collate,  # needed to deal with batching for our complex dataset items
         drop_last=True,  # Drop incomplete batches
     )
 
@@ -336,7 +207,7 @@ def create_dataloaders(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test SVG Autoencoder")
+    parser = argparse.ArgumentParser(description="Test Multi MAE")
 
     # Dataset args
     parser.add_argument("--svg-dir", type=str, default="svgx_svgs", help="SVG directory")
@@ -371,7 +242,6 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup logging with Rich formatting
     setup_logging(
         level=args.log_level,
         log_file=args.log_file,
@@ -380,11 +250,11 @@ def main():
     )
 
     logger.info("=" * 60)
-    logger.info("[bold cyan]SVG Autoencoder Test[/bold cyan]", extra={"markup": True})
+    logger.info("[bold cyan]Multi MAE Test[/bold cyan]", extra={"markup": True})
     logger.info("=" * 60)
 
     # Create config
-    cfg = _DefaultConfig()
+    cfg = MAEConfig()
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
     cfg.encode_stages = args.encode_stages
@@ -396,7 +266,7 @@ def main():
 
     # Create model
     logger.info("Creating model...")
-    model = SimpleSVGAutoencoder(cfg, debug_mode=args.debug)
+    model = MultiMAEModel(cfg, logger)
 
     # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -419,7 +289,6 @@ def main():
         check_gradients=args.debug,
     )
 
-    # Run training
     logger.info("Starting training...")
     try:
         trainer.run(

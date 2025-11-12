@@ -127,3 +127,10 @@ class HierarchicalSelfMatching(_DefaultConfig):
         self.encode_stages = 2
         self.decode_stages = 2
         self.self_match = True
+
+
+class MAEConfig(_DefaultConfig):
+    def __init__(self):
+        super().__init__()
+
+        self.decoder_embed_dim = 768
