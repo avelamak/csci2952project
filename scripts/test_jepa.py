@@ -14,7 +14,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.base import TrainStep
 from vecssl.models.config import JepaConfig
 from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
@@ -58,9 +57,11 @@ class SimpleJEPA(nn.Module):
         self.model = Jepa(cfg)
 
         logger.info("Created SimpleJEPA:")
-        logger.info(f"  - masking_ratio: {getattr(cfg, 'masking_ratio', None)}")
         logger.info(f"  - max_num_groups: {cfg.max_num_groups}")
         logger.info(f"  - max_seq_len: {cfg.max_seq_len}")
+        logger.info(f"  - d_joint: {cfg.d_joint}")
+        logger.info(f"  - debug_mode: {debug_mode}")
+        logger.info(f"  - use_resnet: {cfg.use_resnet}")
 
     def forward(self, batch):
         device = next(self.parameters()).device
@@ -76,12 +77,15 @@ class SimpleJEPA(nn.Module):
 
         # Optionally print debug info on first step
         if self.debug_mode and self.step_count == 0:
-            logger.info(f"JEPA forward returned TrainStep: loss={step.loss if hasattr(step, 'loss') else None}")
+            logger.info(
+                f"JEPA forward returned TrainStep: loss={step.loss if hasattr(step, 'loss') else None}"
+            )
 
         self.step_count += 1
         return step
 
     def check_gradients(self):
+        """Check gradient flow through the model"""
         gradient_info = {}
         total_params = 0
         params_with_grad = 0
@@ -118,44 +122,93 @@ class SimpleJEPA(nn.Module):
 
 
 class DebugTrainer(Trainer):
-    """A small Trainer extension to exercise one training loop and optionally check gradients."""
+    """Extended trainer with gradient checking"""
 
     def __init__(self, *args, check_gradients=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.check_gradients = check_gradients
         self.first_step_done = False
 
-    def run(self, train_loader, val_loader=None, max_epochs=1, log_every=50):
+    def run(self, train_loader, val_loader=None, max_epochs=10, log_every=50):
         device = self.device
         self.model.to(device)
         scaler = torch.amp.grad_scaler.GradScaler(enabled=self.amp)
 
-        for ep in range(max_epochs):
-            self.model.train()
-            for i, batch in enumerate(train_loader):
-                with torch.amp.autocast_mode.autocast(device.type):
-                    step = self.model(batch)
-                    loss = step.loss
-                scaler.scale(loss).backward()
+        from vecssl.util import make_progress
 
-                if self.check_gradients and not self.first_step_done:
-                    grad_info, grad_summary = self.model.check_gradients()
-                    logger.info(f"Grad summary: {grad_summary}")
-                    self.first_step_done = True
+        progress = make_progress()
+        with progress:
+            epoch_task = progress.add_task("epoch", total=max_epochs)
+            for ep in range(max_epochs):
+                self.model.train()
+                batch_task = progress.add_task("train", total=len(train_loader))
+                run = 0.0
+                for i, batch in enumerate(train_loader):
+                    with torch.amp.autocast_mode.autocast(device.type):
+                        step = self.model(batch)
+                        loss = step.loss
+                    scaler.scale(loss).backward()
 
-                if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-                scaler.step(self.optimizer)
-                scaler.update()
-                self.optimizer.zero_grad()
-                if self.scheduler:
-                    self.scheduler.step()
+                    # Check gradients on first step
+                    if self.check_gradients and not self.first_step_done:
+                        logger.info(
+                            "[bold yellow]Debug: Gradient flow check[/bold yellow]",
+                            extra={"markup": True},
+                        )
+                        grad_info, grad_summary = self.model.check_gradients()
+
+                        logger.info(
+                            f"  Total params: [bold]{grad_summary['total_params']}[/bold]",
+                            extra={"markup": True},
+                        )
+                        logger.info(
+                            f"  Params with grad: [bold]{grad_summary['params_with_grad']}[/bold] "
+                            f"({grad_summary['gradient_flow_percentage']:.1f}%)",
+                            extra={"markup": True},
+                        )
+                        logger.info(f"  Max grad norm: {grad_summary['max_grad_norm']:.6f}")
+                        logger.info(f"  Min grad norm: {grad_summary['min_grad_norm']:.6f}")
+
+                        # Show first few and last few layers
+                        logger.info("  Sample gradient norms:")
+                        shown = 0
+                        for name, info in list(grad_info.items())[:5]:
+                            if info["has_grad"]:
+                                logger.info(f"    {name}: {info['grad_norm']:.6f}")
+                                shown += 1
+                        logger.info("    ...")
+                        for name, info in list(grad_info.items())[-5:]:
+                            if info["has_grad"]:
+                                logger.info(f"    {name}: {info['grad_norm']:.6f}")
+
+                        self.first_step_done = True
+
+                    if self.grad_clip:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                    scaler.step(self.optimizer)
+                    scaler.update()
+                    self.optimizer.zero_grad()
+                    if self.scheduler:
+                        self.scheduler.step()
+                    run += float(loss.detach())
+                    if self.tb and i % log_every == 0:
+                        self.tb.add_scalar("train/loss", run / (i + 1), ep * len(train_loader) + i)
+                        if step.logs:
+                            for k, v in step.logs.items():
+                                self.tb.add_scalar(f"train/{k}", v, ep * len(train_loader) + i)
+                    progress.advance(batch_task)
+                progress.advance(epoch_task)
+                logger.info(f"epoch {ep + 1}/{max_epochs} done")
+
+                if val_loader:
+                    self.validate(val_loader, ep)
 
 
 def create_dataloaders(args):
     """Create train and val dataloaders"""
     logger.info("Creating datasets...")
 
+    # Training dataset (80% of data)
     train_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
@@ -166,6 +219,7 @@ def create_dataloaders(args):
         already_preprocessed=True,
     )
 
+    # Validation dataset (20% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
@@ -179,13 +233,14 @@ def create_dataloaders(args):
     logger.info(f"  Train samples: {len(train_dataset)}")
     logger.info(f"  Val samples: {len(val_dataset)}")
 
+    # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=True,
+        drop_last=True,  # Drop incomplete batches
     )
 
     val_loader = DataLoader(
@@ -211,10 +266,11 @@ def main():
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
+    parser.add_argument("--use-resnet", action="store_true", default=True, help="Use ResNet")
 
     # Training args
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
-    parser.add_argument("--epochs", type=int, default=1, help="Number of epochs")
+    parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
@@ -229,7 +285,9 @@ def main():
 
     args = parser.parse_args()
 
-    setup_logging(level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True)
+    setup_logging(
+        level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True
+    )
 
     logger.info("=" * 60)
     logger.info("[bold cyan]JEPA Test[/bold cyan]", extra={"markup": True})
@@ -238,17 +296,22 @@ def main():
     cfg = JepaConfig()
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
+    cfg.use_resnet = args.use_resnet
 
+    # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
 
+    # Count parameters
     logger.info("Creating model...")
     model = SimpleJEPA(cfg, debug_mode=args.debug)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
+    # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
+    # Create trainer
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
 
@@ -258,16 +321,24 @@ def main():
         device=device,
         grad_clip=args.grad_clip,
         tb_dir=args.tb_dir,
-        amp=False,
+        amp=False,  # Disable AMP for debugging
         check_gradients=args.debug,
     )
 
+    # Run training
     logger.info("Starting training...")
     try:
-        trainer.run(train_loader=train_loader, val_loader=val_loader, max_epochs=args.epochs, log_every=args.log_every)
-        logger.info("[bold green]✓ JEPA training completed (smoke test)![/bold green]", extra={"markup": True})
+        trainer.run(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            max_epochs=args.epochs,
+            log_every=args.log_every,
+        )
+        logger.info(
+            "[bold green]✓ Training completed successfully![/bold green]", extra={"markup": True}
+        )
     except Exception as e:
-        logger.error(f"[bold red]✗ JEPA training failed: {e}[/bold red]", extra={"markup": True})
+        logger.error(f"[bold red]✗ Training failed: {e}[/bold red]", extra={"markup": True})
         import traceback
 
         traceback.print_exc()
