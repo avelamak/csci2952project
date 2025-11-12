@@ -17,6 +17,7 @@ dependencies = [
     "tensorboard>=2.20.0",
     "torch>=2.9.0",
     "torchvision>=0.24.0",
+    "transformers>=4.57",
 ]
 
 [tool.setuptools.packages.find]
