@@ -128,8 +128,10 @@ class HierarchicalSelfMatching(_DefaultConfig):
         self.decode_stages = 2
         self.self_match = True
 
+
 class ContrastiveConfig(_DefaultConfig):
     # Contrastive model
     def __init__(self):
         super().__init__()
         self.contrastive_logit_scale = 0.07
+        self.use_group = True

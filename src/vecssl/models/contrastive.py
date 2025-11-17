@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from torchvision.models import vit_b_16
-from .base import JointModel, TrainStep
-from model import SVGEmbedding
-from .config import ContrastiveConfig
+import torch.nn.functional as F
+from vecssl.util import _make_seq_first
+from vecssl.models.base import JointModel, TrainStep
+from vecssl.models.model import Encoder, DINOImageEncoder
+from vecssl.models.config import ContrastiveConfig
+from vecssl.models.basic_blocks import ResNet
 
 
 class ContrastiveModel(JointModel):
@@ -12,21 +14,15 @@ class ContrastiveModel(JointModel):
         super().__init__()
         self.cfg = cfg
 
-        # Initialize ViT model for image encoding
-        self.image_encoder = vit_b_16(weights=None)  # No pre-trained weights
-        self.image_encoder.heads = nn.Identity()  # Remove classification head
-        img_dim = self.image_encoder.hidden_dim  # Output dimension of ViT
+        self.image_encoder = DINOImageEncoder()
+        self.image_dim = 768
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / cfg.contrastive_logit_scale))
 
         # Initialize SVG embedding model
-        self.svg_embedding_model = SVGEmbedding(
-            seq_len=cfg.max_seq_len,
-            cfg=cfg,
-            rel_args=False,
-            use_group=cfg.use_group,
-            group_len=None,
-        )
+        self.encoder = Encoder(cfg)
+        if cfg.use_resnet:
+            self.resnet = ResNet(cfg.d_model)
 
         # Projection heads
         joint_dim = 512  # Joint embedding dimension
@@ -37,7 +33,7 @@ class ContrastiveModel(JointModel):
             nn.Linear(joint_dim, joint_dim),
         )
         self.img_projection = nn.Sequential(
-            nn.Linear(img_dim, joint_dim),
+            nn.Linear(self.image_dim, joint_dim),
             nn.BatchNorm1d(joint_dim),
             nn.ReLU(),
             nn.Linear(joint_dim, joint_dim),
@@ -50,7 +46,12 @@ class ContrastiveModel(JointModel):
         # Encode SVG
         svg_commands = batch["commands"]
         svg_args = batch["args"]
-        z_svg = self.svg_embedding_model(svg_commands, svg_args)  # [batch, dim_z]
+        commands_enc, args_enc = _make_seq_first(svg_commands, svg_args)
+        z_svg = self.encoder(commands_enc, args_enc)  # [batch, dim_z]
+        if self.cfg.use_resnet:
+            z_svg = self.resnet(z_svg)
+        z_svg = np.squeeze(z_svg, axis=0)
+        z_svg = np.squeeze(z_svg, axis=0)
         z_svg = self.svg_projection(z_svg)  # Project to joint space
 
         # Encode image

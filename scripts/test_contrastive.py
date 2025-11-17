@@ -7,7 +7,6 @@ import logging
 import sys
 
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
@@ -36,6 +35,7 @@ def custom_collate(batch):
     collated["source"] = [item["source"] for item in batch]
 
     return collated
+
 
 def create_dataloaders(args):
     """Create train and val dataloaders"""
@@ -71,7 +71,7 @@ def create_dataloaders(args):
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=0,
+        num_workers=args.num_workers,
         collate_fn=custom_collate,
         drop_last=True,  # Drop incomplete batches
     )
@@ -80,7 +80,7 @@ def create_dataloaders(args):
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=0,
+        num_workers=args.num_workers,
         collate_fn=custom_collate,
         drop_last=False,
     )
@@ -164,7 +164,6 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
 
-    print("Before initializing Trainer")
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
@@ -173,19 +172,16 @@ def main():
         tb_dir=args.tb_dir,
         amp=False,  # Disable AMP for debugging
     )
-    print("After initializing Trainer")
 
     # Run training
     logger.info("Starting training...")
     try:
-        print("Before running Trainer")
         trainer.run(
             train_loader=train_loader,
             val_loader=val_loader,
             max_epochs=args.epochs,
             log_every=args.log_every,
         )
-        print("After running Trainer")
         logger.info(
             "[bold green]✓ Training completed successfully![/bold green]", extra={"markup": True}
         )
