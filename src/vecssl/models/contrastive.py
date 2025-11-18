@@ -25,18 +25,17 @@ class ContrastiveModel(JointModel):
             self.resnet = ResNet(cfg.d_model)
 
         # Projection heads
-        joint_dim = 512  # Joint embedding dimension
         self.svg_projection = nn.Sequential(
-            nn.Linear(cfg.dim_z, joint_dim),
-            nn.BatchNorm1d(joint_dim),
+            nn.Linear(cfg.dim_z, cfg.joint_dim),
+            nn.BatchNorm1d(cfg.joint_dim),
             nn.ReLU(),
-            nn.Linear(joint_dim, joint_dim),
+            nn.Linear(cfg.joint_dim, cfg.joint_dim),
         )
         self.img_projection = nn.Sequential(
-            nn.Linear(self.image_dim, joint_dim),
-            nn.BatchNorm1d(joint_dim),
+            nn.Linear(self.image_dim, cfg.joint_dim),
+            nn.BatchNorm1d(cfg.joint_dim),
             nn.ReLU(),
-            nn.Linear(joint_dim, joint_dim),
+            nn.Linear(cfg.joint_dim, cfg.joint_dim),
         )
 
     def encode_joint(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:

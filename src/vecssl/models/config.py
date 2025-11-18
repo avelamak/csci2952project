@@ -134,4 +134,5 @@ class ContrastiveConfig(_DefaultConfig):
     def __init__(self):
         super().__init__()
         self.contrastive_logit_scale = 0.07
+        self.joint_dim = 512  # Joint embedding dimension
         self.use_group = True
