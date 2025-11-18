@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# This is an example batch script for slurm on Oscar
+#
+# The commands for slurm start with #SBATCH
+# All slurm commands need to come before the program
+# you want to run.  In this example, 'echo "Hello World!"
+# is the command we are running.
+#
+# This is a bash script, so any line that starts with # is
+# a comment.  If you need to comment out an #SBATCH line
+# use ##SBATCH
+#
+# To submit this script to slurm do:
+#    sbatch batch.script
+#
+# Once the job starts you will see a file MySerialJob-****.out
+# The **** will be the slurm JobID
+
+# --- Start of slurm commands -----------
+
+#SBATCH --time=2:00:00
+
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=6
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+
+#SBATCH -J JEPA
+#SBATCH -o JEPA-%j.out
+#SBATCH -e JEPA-%j.err
+
+#----- End of slurm commands ----
+
+
+source .venv/bin/activate
+wandb login
+
+uv run scripts/train_jepa.py \
+    --batch-size 4 \
+    --epoch 1 \
+    --lr 1e-4 \
+    --log-every 1 \
+    --wandb-project "vecssl_jepa"

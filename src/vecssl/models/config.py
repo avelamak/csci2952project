@@ -136,3 +136,12 @@ class ContrastiveConfig(_DefaultConfig):
         self.contrastive_logit_scale = 0.07
         self.joint_dim = 512  # Joint embedding dimension
         self.use_group = True
+class JepaConfig(_DefaultConfig):
+    def __init__(self):
+        super().__init__()
+
+        self.d_joint = 1024
+        self.predictor_num_heads = 4
+        self.predictor_num_layers = 2
+        self.predictor_hidden_dim = 512
+        self.predictor_dropout = 0.1

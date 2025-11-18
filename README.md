@@ -40,6 +40,23 @@ python scripts/test_svg_autoencoder.py \
      --batch-size 4
 ```
 
+**Logging with Weights & Biases**: To enable wandb logging (in addition to TensorBoard), add the `--wandb-project` flag:
+```bash
+# Set your wandb API key
+export WANDB_API_KEY=your_api_key_here
+wandb login
+
+# Run with wandb enabled
+python scripts/test_svg_autoencoder.py \
+     --svg-dir svgx_svgs \
+     --img-dir svgx_imgs \
+     --meta svgx_meta.csv \
+     --epochs 2 \
+     --batch-size 4 \
+     --wandb-project "your-project-name" \
+     --wandb-name "optional-run-name"
+```
+
 ## Project Overview
 
 ### Goals

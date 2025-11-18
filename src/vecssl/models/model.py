@@ -28,7 +28,7 @@ class DINOImageEncoder(nn.Module):
     def __init__(self):
         super().__init__()
         self.processor = AutoImageProcessor.from_pretrained(
-            "facebook/dinov2-base", do_rescale=False
+            "facebook/dinov2-base", do_rescale=False, use_fast=True
         )
         self.backbone = AutoModel.from_pretrained("facebook/dinov2-base")
 

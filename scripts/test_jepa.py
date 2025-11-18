@@ -1,8 +1,8 @@
 """
-Minimal SVG Autoencoder Test Script
+Minimal JEPA Test Script
 
-Tests that the SVGTransformer encoder→decoder→loss pipeline works correctly.
-Ignores images for now, focuses only on SVG reconstruction.
+Tests that the JEPA model forward + loss pipeline runs (smoke test).
+This mirrors scripts/test_svg_autoencoder.py but builds a JEPA model.
 """
 
 import argparse
@@ -14,13 +14,10 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.base import TrainStep
-from vecssl.models.config import _DefaultConfig
-from vecssl.models.loss import SVGLoss
+from vecssl.models.config import JepaConfig
+from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
 from vecssl.util import setup_logging
-
-from vecssl.models.model import SVGTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -43,124 +40,49 @@ def custom_collate(batch):
     return collated
 
 
-class SimpleSVGAutoencoder(nn.Module):
+class SimpleJEPA(nn.Module):
     """
-    Minimal autoencoder wrapper for testing SVGTransformer.
+    Minimal wrapper for testing JEPA.
 
-    Flow:
-        1. Encode: commands/args → latent z (+ mu, logsigma if VAE)
-        2. Decode: z → reconstructed commands/args logits
-        3. Loss: reconstruction loss (commands + args + KL if VAE)
+    The real `Jepa.forward` returns a TrainStep; this wrapper just delegates and
+    exposes a `check_gradients` helper similar to the SVG test script.
     """
 
-    def __init__(self, cfg: _DefaultConfig, debug_mode: bool = False):
+    def __init__(self, cfg: JepaConfig, debug_mode: bool = False):
         super().__init__()
         self.cfg = cfg
         self.debug_mode = debug_mode
         self.step_count = 0
 
-        self.model = SVGTransformer(cfg)
+        self.model = Jepa(cfg)
 
-        # Create loss function
-        self.loss_fn = SVGLoss(cfg)
-
-        # Loss weights (same as DeepSVG defaults)
-        self.loss_weights = {
-            "kl_tolerance": 0.1,
-            "loss_kl_weight": 1.0,  # Will ramp up during training
-            "loss_cmd_weight": 1.0,
-            "loss_args_weight": 2.0,
-            "loss_visibility_weight": 1.0,
-        }
-
-        logger.info("Created SimpleSVGAutoencoder:")
-        logger.info(f"  - encode_stages: {cfg.encode_stages}")
-        logger.info(f"  - decode_stages: {cfg.decode_stages}")
-        logger.info(f"  - use_vae: {cfg.use_vae}")
+        logger.info("Created SimpleJEPA:")
         logger.info(f"  - max_num_groups: {cfg.max_num_groups}")
         logger.info(f"  - max_seq_len: {cfg.max_seq_len}")
+        logger.info(f"  - d_joint: {cfg.d_joint}")
         logger.info(f"  - debug_mode: {debug_mode}")
+        logger.info(f"  - use_resnet: {cfg.use_resnet}")
 
     def forward(self, batch):
-        """
-        Forward pass for training.
-
-        Args:
-            batch: dict with keys:
-                - commands: [B, G, S] long tensor
-                - args: [B, G, S, n_args] long tensor
-                - (other keys ignored)
-
-        Returns:
-            TrainStep(loss, logs, extras)
-        """
         device = next(self.parameters()).device
 
         # Move data to device
-        commands = batch["commands"].to(device)
-        args = batch["args"].to(device)
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
-        # Debug: Print input shapes on first step
-        if self.debug_mode and self.step_count == 0:
-            logger.info("[bold yellow]Debug: Input shapes[/bold yellow]", extra={"markup": True})
-            logger.info(f"  commands: {commands.shape} dtype={commands.dtype}")
-            logger.info(f"  args: {args.shape} dtype={args.dtype}")
-
-        # Prepare model args based on config
-        if self.cfg.encode_stages == 1:
-            # Flatten for 1-stage (not implemented yet, will fail gracefully)
-            raise NotImplementedError("1-stage encoding not yet implemented in test script")
-        # 2-stage: use separated format
-        model_args = [commands, args, commands, args]  # encoder + decoder inputs
-
-        # Forward pass through model
         try:
-            output = self.model(*model_args, params={})
+            step = self.model(batch)
         except Exception as e:
             logger.error(f"Model forward failed: {e}")
             raise
 
-        # Debug: Print output shapes on first step
+        # Optionally print debug info on first step
         if self.debug_mode and self.step_count == 0:
-            logger.info("[bold yellow]Debug: Output shapes[/bold yellow]", extra={"markup": True})
-            for key, val in output.items():
-                if isinstance(val, torch.Tensor):
-                    logger.info(f"  {key}: {val.shape} dtype={val.dtype}")
-                else:
-                    logger.info(f"  {key}: {type(val)}")
-
-        # Compute loss
-        try:
-            loss_dict = self.loss_fn(output, labels=None, weights=self.loss_weights)
-        except Exception as e:
-            logger.error(f"Loss computation failed: {e}")
-            logger.error(f"Output keys: {output.keys()}")
-            raise
-
-        # Debug: Print loss values on first step
-        if self.debug_mode and self.step_count == 0:
-            logger.info("[bold yellow]Debug: Loss components[/bold yellow]", extra={"markup": True})
-            for key, val in loss_dict.items():
-                if isinstance(val, torch.Tensor):
-                    logger.info(f"  {key}: {val.item():.6f}")
-
-        # Extract individual losses for logging
-        logs = {
-            "loss_total": loss_dict["loss"].item(),
-        }
-
-        if "loss_kl" in loss_dict:
-            logs["loss_kl"] = loss_dict["loss_kl"].item()
-        if "loss_cmd" in loss_dict:
-            logs["loss_cmd"] = loss_dict["loss_cmd"].item()
-        if "loss_args" in loss_dict:
-            logs["loss_args"] = loss_dict["loss_args"].item()
-        if "loss_visibility" in loss_dict:
-            logs["loss_visibility"] = loss_dict["loss_visibility"].item()
+            logger.info(
+                f"JEPA forward returned TrainStep: loss={step.loss if hasattr(step, 'loss') else None}"
+            )
 
         self.step_count += 1
-
-        return TrainStep(loss=loss_dict["loss"], logs=logs, extras={"output": output})
+        return step
 
     def check_gradients(self):
         """Check gradient flow through the model"""
@@ -202,8 +124,8 @@ class SimpleSVGAutoencoder(nn.Module):
 class DebugTrainer(Trainer):
     """Extended trainer with gradient checking"""
 
-    def __init__(self, *args, check_gradients=False, wandb_project=None, cfg=None, **kwargs):
-        super().__init__(*args, wandb_project=wandb_project, cfg=cfg, **kwargs)
+    def __init__(self, *args, check_gradients=False, **kwargs):
+        super().__init__(*args, **kwargs)
         self.check_gradients = check_gradients
         self.first_step_done = False
 
@@ -269,34 +191,17 @@ class DebugTrainer(Trainer):
                     if self.scheduler:
                         self.scheduler.step()
                     run += float(loss.detach())
-                    global_step = ep * len(train_loader) + i
                     if self.tb and i % log_every == 0:
-                        self.tb.add_scalar("train/loss", run / (i + 1), global_step)
+                        self.tb.add_scalar("train/loss", run / (i + 1), ep * len(train_loader) + i)
                         if step.logs:
                             for k, v in step.logs.items():
-                                self.tb.add_scalar(f"train/{k}", v, global_step)
-                    if self.wandb_run and i % log_every == 0:
-                        wandb_logs = {
-                            "train/loss": run / (i + 1),
-                            "epoch": ep,
-                            "step": global_step,
-                        }
-                        if step.logs:
-                            for k, v in step.logs.items():
-                                wandb_logs[f"train/{k}"] = v
-                        self.wandb_run.log(wandb_logs)
+                                self.tb.add_scalar(f"train/{k}", v, ep * len(train_loader) + i)
                     progress.advance(batch_task)
                 progress.advance(epoch_task)
                 logger.info(f"epoch {ep + 1}/{max_epochs} done")
 
                 if val_loader:
                     self.validate(val_loader, ep)
-
-        # Finish wandb run after training completes
-        if self.wandb_run:
-            import wandb
-
-            wandb.finish()
 
 
 def create_dataloaders(args):
@@ -351,7 +256,7 @@ def create_dataloaders(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test SVG Autoencoder")
+    parser = argparse.ArgumentParser(description="Test JEPA model")
 
     # Dataset args
     parser.add_argument("--svg-dir", type=str, default="svgx_svgs", help="SVG directory")
@@ -361,111 +266,54 @@ def main():
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
-    parser.add_argument("--encode-stages", type=int, default=2, help="Encoder stages (1 or 2)")
-    parser.add_argument("--decode-stages", type=int, default=2, help="Decoder stages (1 or 2)")
-    parser.add_argument("--use-vae", action="store_true", default=True, help="Use VAE")
+    parser.add_argument("--use-resnet", action="store_true", default=True, help="Use ResNet")
 
     # Training args
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
     parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--num-workers", type=int, default=2, help="DataLoader workers")
+    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
-    parser.add_argument("--log-every", type=int, default=1, help="Log every N steps")
+    parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument(
-        "--tb-dir", type=str, default="runs/test_autoencoder", help="TensorBoard dir"
-    )
+    parser.add_argument("--tb-dir", type=str, default="runs/test_jepa", help="TensorBoard dir")
 
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
-    parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode (print shapes & gradients)"
-    )
-
-    # Wandb args
-    parser.add_argument(
-        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
-    )
-    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
-    parser.add_argument(
-        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
-    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
 
     args = parser.parse_args()
 
-    # Setup logging with Rich formatting
     setup_logging(
-        level=args.log_level,
-        log_file=args.log_file,
-        rich_tracebacks=True,
-        show_level=True,
+        level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True
     )
 
     logger.info("=" * 60)
-    logger.info("[bold cyan]SVG Autoencoder Test[/bold cyan]", extra={"markup": True})
+    logger.info("[bold cyan]JEPA Test[/bold cyan]", extra={"markup": True})
     logger.info("=" * 60)
 
-    # Create config
-    cfg = _DefaultConfig()
+    cfg = JepaConfig()
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
-    cfg.encode_stages = args.encode_stages
-    cfg.decode_stages = args.decode_stages
-    cfg.use_vae = args.use_vae
+    cfg.use_resnet = args.use_resnet
 
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
 
-    # Create model
-    logger.info("Creating model...")
-    model = SimpleSVGAutoencoder(cfg, debug_mode=args.debug)
-
     # Count parameters
+    logger.info("Creating model...")
+    model = SimpleJEPA(cfg, debug_mode=args.debug)
+
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # Setup device
+    # Create trainer
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
-
-    # Prepare wandb config (combine model config + training args)
-    wandb_config = None
-    if args.wandb_project:
-        wandb_config = {
-            # Model config
-            "max_num_groups": cfg.max_num_groups,
-            "max_seq_len": cfg.max_seq_len,
-            "encode_stages": cfg.encode_stages,
-            "decode_stages": cfg.decode_stages,
-            "use_vae": cfg.use_vae,
-            "d_model": cfg.d_model,
-            "n_layers": cfg.n_layers,
-            "n_layers_decode": cfg.n_layers_decode,
-            "n_heads": cfg.n_heads,
-            "dim_feedforward": cfg.dim_feedforward,
-            "dim_z": cfg.dim_z,
-            "dropout": cfg.dropout,
-            # Training args
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "lr": args.lr,
-            "grad_clip": args.grad_clip,
-            "num_workers": args.num_workers,
-            "log_every": args.log_every,
-            "device": str(device),
-            "amp": False,
-            "n_params": n_params,
-        }
-        logger.info(
-            f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
-        )
-
-    # Create trainer
 
     trainer = DebugTrainer(
         model=model,
@@ -475,8 +323,6 @@ def main():
         tb_dir=args.tb_dir,
         amp=False,  # Disable AMP for debugging
         check_gradients=args.debug,
-        wandb_project=args.wandb_project,
-        cfg=wandb_config,
     )
 
     # Run training
