@@ -89,9 +89,6 @@ class SVGXDataset(Dataset):
         if cache:
             self.cache = cache
             self._data_cache = {}
-            # ! DEBUG
-            for i in range(len(self.df)):
-                _ = self.__getitem__(i)
 
         self.MAX_NUM_GROUPS = max_num_groups
         self.MAX_SEQ_LEN = max_seq_len
@@ -109,6 +106,11 @@ class SVGXDataset(Dataset):
 
         # Reset index to ensure contiguous 0-N indexing
         self.df = df.reset_index(drop=True)
+
+        if self.cache:
+            # ! DEBUG
+            for i in range(len(self.df)):
+                _ = self.__getitem__(i)
 
     def __len__(self) -> int:
         return len(self.df)
