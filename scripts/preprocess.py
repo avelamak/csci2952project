@@ -11,9 +11,11 @@ import datasets
 from datasets import load_dataset
 import pandas as pd
 import traceback
+import torch
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from vecssl.data.svg import SVG
+from vecssl.data.dataset import SVGXDataset
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +33,15 @@ def _init_worker(output_svg_folder, output_img_folder):
     _OUT_IMG = output_img_folder
 
 
-def preprocess_svg_idx(idx):
+def preprocess_svg_idx(idx, to_tensor: bool = False):
     """Use your existing function, but fetch the sample inside the worker."""
     sample = _DATASET[idx]
-    return preprocess_svg_sample(sample, _OUT_SVG, _OUT_IMG)
+    return preprocess_svg_sample(sample, _OUT_SVG, _OUT_IMG, to_tensor=to_tensor)
 
 
-def preprocess_svg_sample(sample, output_svg_folder=None, output_img_folder=None):
+def preprocess_svg_sample(
+    sample, output_svg_folder=None, output_img_folder=None, to_tensor: bool = False
+):
     """Process a single HF dataset sample and return metadata"""
     try:
         uuid = sample["uuid"]
@@ -66,8 +70,15 @@ def preprocess_svg_sample(sample, output_svg_folder=None, output_img_folder=None
 
         # Optionally save simplified SVG
         if output_svg_folder:
-            svg_path = Path(output_svg_folder) / f"{uuid}.svg"
-            svg.save_svg(str(svg_path))
+            if not to_tensor:
+                svg_path = Path(output_svg_folder) / f"{uuid}.svg"
+                svg.save_svg(str(svg_path))
+            else:
+                # Augment
+                SVGXDataset.preprocess(svg, augment=False)  # No augmentation
+                t_sep, fillings = svg.to_tensor(concat_groups=False), svg.to_fillings()
+                svg_path = Path(output_svg_folder) / f"{uuid}.pt"
+                torch.save({"t_sep": t_sep, "fillings": fillings}, svg_path)
 
         # Optionally save image as PNG (raw PIL Image from HF dataset)
         if output_img_folder and "image" in sample:
@@ -102,6 +113,11 @@ def main():
     parser.add_argument("--workers", default=4, type=int)
     parser.add_argument(
         "--max_samples", default=None, type=int, help="Optional: limit number of samples to process"
+    )
+    parser.add_argument(
+        "--to_tensor",
+        action="store_true",
+        help="Optional: preprocess and convert to tensor directly",
     )
     args = parser.parse_args()
 
@@ -148,7 +164,7 @@ def main():
                 batch_end = min(batch_start + batch_size, num_samples)
 
                 future_to_idx = {
-                    executor.submit(preprocess_svg_idx, idx): idx
+                    executor.submit(preprocess_svg_idx, idx, args.to_tensor): idx
                     for idx in range(batch_start, batch_end)
                 }
 
