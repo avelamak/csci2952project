@@ -79,7 +79,7 @@ class SVGXDataset(Dataset):
         pad_val: int = -1,
         train_ratio: float = 1.0,
         already_preprocessed: bool = True,
-        already_tensor: bool = False,
+        already_tensor: bool = True,
         cache: bool = True,
     ):
         self.svg_dir = svg_dir
