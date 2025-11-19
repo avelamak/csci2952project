@@ -22,52 +22,6 @@ from vecssl.data.geom import Point
 from vecssl.data.svg_tensor import SVGTensor
 
 
-# class SVGXTensorDataset(Dataset):
-#     def __init__(
-#         self,
-#         svg_tensor_dir: str,
-#         img_dir: str,
-#         meta_filepath: str,
-#         max_num_groups: int = 8,
-#         max_seq_len: int = 40,
-#         pad_val: int = -1,
-#         train_ratio: float = 1.0,
-#     ):
-#         self.svg_tensor_dir = svg_tensor_dir
-#         self.img_dir = img_dir
-
-#         self.MAX_NUM_GROUPS = max_num_groups
-#         self.MAX_SEQ_LEN = max_seq_len
-#         self.MAX_TOTAL_LEN = max_num_groups * max_seq_len
-#         self.PAD_VAL = pad_val
-
-#         # Load and filter metadata
-#         df = pd.read_csv(meta_filepath)
-
-#         # Filter by constraints (like DeepSVG)
-#         df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len)]
-
-#         # Apply train ratio for splitting if needed
-#         df = df.sample(frac=train_ratio) if train_ratio < 1.0 else df
-
-#         # Reset index to ensure continguou 0-N indexing
-#         self.df = df.reset_index(drop=True)
-
-#         def __len__(self) -> int:
-#             return len(self.df)
-
-#         def _load_svg_tensor(self, uuid: str):
-#             ...
-
-#         def __getitem__(self, idx: int) -> dict[str, Any]:
-#             # Get entry from filtered dataframe
-#             entry = self.df.iloc[idx]
-#             uuid = entry["uuid"]
-
-#             # Load SVG tensor from disk
-#             svg_tensor = self._load_svg_tensor()
-
-
 class SVGXDataset(Dataset):
     def __init__(
         self,
