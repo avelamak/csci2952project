@@ -123,6 +123,15 @@ def main():
         "--debug", action="store_true", help="Enable debug mode (print shapes & gradients)"
     )
 
+    # Wandb args
+    parser.add_argument(
+        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
+    )
+    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
+    parser.add_argument(
+        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
+    )
+
     args = parser.parse_args()
 
     # Setup logging with Rich formatting
