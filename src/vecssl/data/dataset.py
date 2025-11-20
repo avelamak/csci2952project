@@ -11,6 +11,7 @@ import os
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
 from PIL import Image
+from pathlib import Path
 import pandas as pd
 
 import torch
@@ -32,10 +33,15 @@ class SVGXDataset(Dataset):
         pad_val: int = -1,
         train_ratio: float = 1.0,
         already_preprocessed: bool = True,
+        already_tensor: bool = True,
+        cache: bool = False,
     ):
         self.svg_dir = svg_dir
         self.img_dir = img_dir
         self.already_preprocessed = already_preprocessed
+        self.already_tensor = already_tensor  # ? maybe add an assert for this?
+        self.cache = cache
+        self._data_cache = {}
 
         self.MAX_NUM_GROUPS = max_num_groups
         self.MAX_SEQ_LEN = max_seq_len
@@ -54,12 +60,20 @@ class SVGXDataset(Dataset):
         # Reset index to ensure contiguous 0-N indexing
         self.df = df.reset_index(drop=True)
 
+        if self.cache:
+            # ! DEBUG
+            for i in range(len(self.df)):
+                _ = self.__getitem__(i)
+
     def __len__(self) -> int:
         return len(self.df)
 
+    def _load_svg_tensor(self, uuid: str):
+        res = torch.load(Path(self.svg_dir) / f"{uuid}.pt")
+        return res["t_sep"], res["fillings"]
+
     def _load_svg(self, uuid: str):
         svg_path = os.path.join(self.svg_dir, f"{uuid}.svg")
-
         # Read SVG file content
         with open(svg_path, "r") as f:
             svg_code = f.read()
@@ -89,25 +103,30 @@ class SVGXDataset(Dataset):
         return svg
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
+        if self.cache and idx in self._data_cache:
+            return self._data_cache[idx]
         # Get entry from filtered dataframe
         entry = self.df.iloc[idx]
         uuid = entry["uuid"]
 
-        # Load SVG from disk
-        svg = self._load_svg(uuid)
-        svg = SVGXDataset.preprocess(svg, augment=False)  # No augmentation
+        if not self.already_tensor:
+            # Load SVG from disk
+            svg = self._load_svg(uuid)
+            svg = SVGXDataset.preprocess(svg, augment=False)  # No augmentation
 
-        # Convert to tensors
-        t_sep, fillings = svg.to_tensor(concat_groups=False), svg.to_fillings()
+            # Convert to tensors
+            t_sep, fillings = svg.to_tensor(concat_groups=False), svg.to_fillings()
+        else:
+            # Load SVG tensor from disk
+            t_sep, fillings = self._load_svg_tensor(uuid)
+
         res = self.get_data(t_sep, fillings)
-
         # Load image from disk
         img_path = os.path.join(self.img_dir, f"{uuid}.png")
         image = Image.open(img_path)
         image_tensor = transforms.ToTensor()(image)
 
-        # Return dict with all data
-        return {
+        _data = {
             "commands": res["commands"],
             "args": res["args"],
             "tensors": res["tensors"],  # SVGTensor objects with metadata
@@ -116,6 +135,13 @@ class SVGXDataset(Dataset):
             "name": entry.get("name", ""),
             "source": entry.get("source", ""),
         }
+
+        # Save to cache
+        if self.cache:
+            self._data_cache[idx] = _data
+
+        # Return dict with all data
+        return _data
 
     def get_data(self, t_sep, fillings):
         res = {}
