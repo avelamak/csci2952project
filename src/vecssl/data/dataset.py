@@ -34,15 +34,14 @@ class SVGXDataset(Dataset):
         train_ratio: float = 1.0,
         already_preprocessed: bool = True,
         already_tensor: bool = True,
-        cache: bool = True,
+        cache: bool = False,
     ):
         self.svg_dir = svg_dir
         self.img_dir = img_dir
         self.already_preprocessed = already_preprocessed
         self.already_tensor = already_tensor  # ? maybe add an assert for this?
-        if cache:
-            self.cache = cache
-            self._data_cache = {}
+        self.cache = cache
+        self._data_cache = {}
 
         self.MAX_NUM_GROUPS = max_num_groups
         self.MAX_SEQ_LEN = max_seq_len

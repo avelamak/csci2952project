@@ -40,6 +40,21 @@ python scripts/test_svg_autoencoder.py \
      --batch-size 4
 ```
 
+### Training a model
+To train a model chose the appropriate train script and run the following command:
+```
+source .venv/bin/activate
+wandb login # ensure that WANDB_API_KEY is set
+
+python scripts/<training_script>
+    --batch-size 64
+    --epoch 100
+    --lr 1e-4
+    --log-every 1
+    --num-workers 0
+    --wandb-project <project_name>
+```
+
 ## Project Overview
 
 ### Goals
