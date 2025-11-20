@@ -8,6 +8,7 @@ Ignores images for now, focuses only on SVG reconstruction.
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -207,7 +208,15 @@ class DebugTrainer(Trainer):
         self.check_gradients = check_gradients
         self.first_step_done = False
 
-    def run(self, train_loader, val_loader=None, max_epochs=10, log_every=50):
+    def run(
+        self,
+        train_loader,
+        val_loader=None,
+        max_epochs=10,
+        log_every=50,
+        save_every=1,
+        start_epoch=0,
+    ):
         device = self.device
         self.model.to(device)
         scaler = torch.amp.grad_scaler.GradScaler(enabled=self.amp)
@@ -216,8 +225,8 @@ class DebugTrainer(Trainer):
 
         progress = make_progress()
         with progress:
-            epoch_task = progress.add_task("epoch", total=max_epochs)
-            for ep in range(max_epochs):
+            epoch_task = progress.add_task("epoch", total=max_epochs - start_epoch)
+            for ep in range(start_epoch, max_epochs):
                 self.model.train()
                 batch_task = progress.add_task("train", total=len(train_loader))
                 run = 0.0
@@ -289,6 +298,19 @@ class DebugTrainer(Trainer):
                 progress.advance(epoch_task)
                 logger.info(f"epoch {ep + 1}/{max_epochs} done")
 
+                # Save checkpoint periodically
+                if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
+                    from vecssl.trainer import save_chkpt
+
+                    save_chkpt(
+                        model=self.model,
+                        optimizer=self.optimizer,
+                        scheduler=self.scheduler,
+                        cfg=self.cfg,
+                        checkpoint_dir=self.checkpoint_dir,
+                        ep=ep,
+                    )
+
                 if val_loader:
                     self.validate(val_loader, ep)
 
@@ -310,7 +332,7 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.8,
+        train_ratio=0.1,
         already_preprocessed=True,
     )
 
@@ -321,7 +343,7 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.2,
+        train_ratio=0.1,
         already_preprocessed=True,
     )
 
@@ -393,6 +415,15 @@ def main():
         "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
     )
 
+    # Checkpoint args
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default=None, help="Directory to save checkpoints"
+    )
+    parser.add_argument("--save-every", type=int, default=1, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--resume-from", type=str, default=None, help="Path to checkpoint to resume from"
+    )
+
     args = parser.parse_args()
 
     # Setup logging with Rich formatting
@@ -433,6 +464,24 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
 
+    # Load checkpoint if resuming
+    start_epoch = 0
+    if args.resume_from:
+        from vecssl.trainer import load_chkpt
+
+        logger.info(
+            f"Resuming from checkpoint: [bold]{args.resume_from}[/bold]", extra={"markup": True}
+        )
+        metadata = load_chkpt(
+            checkpoint_path=args.resume_from,
+            model=model,
+            optimizer=optimizer,
+            scheduler=None,  # No scheduler in this script
+            device=device,
+        )
+        start_epoch = metadata["epoch"] + 1
+        logger.info(f"Resuming training from epoch {start_epoch}", extra={"markup": True})
+
     # Prepare wandb config (combine model config + training args)
     wandb_config = None
     if args.wandb_project:
@@ -470,6 +519,7 @@ def main():
     trainer = DebugTrainer(
         model=model,
         optimizer=optimizer,
+        checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
         device=device,
         grad_clip=args.grad_clip,
         tb_dir=args.tb_dir,
@@ -487,6 +537,8 @@ def main():
             val_loader=val_loader,
             max_epochs=args.epochs,
             log_every=args.log_every,
+            save_every=args.save_every,
+            start_epoch=start_epoch,
         )
         logger.info(
             "[bold green]✓ Training completed successfully![/bold green]", extra={"markup": True}
