@@ -40,19 +40,21 @@ python scripts/test_svg_autoencoder.py \
      --batch-size 4
 ```
 
-### Training a model
-To train a model chose the appropriate train script and run the following command:
-```
-source .venv/bin/activate
-wandb login # ensure that WANDB_API_KEY is set
+**Logging with Weights & Biases**: To enable wandb logging (in addition to TensorBoard), add the `--wandb-project` flag:
+```bash
+# Set your wandb API key
+export WANDB_API_KEY=your_api_key_here
+wandb login
 
-python scripts/<training_script>
-    --batch-size 64
-    --epoch 100
-    --lr 1e-4
-    --log-every 1
-    --num-workers 0
-    --wandb-project <project_name>
+# Run with wandb enabled
+python scripts/test_svg_autoencoder.py \
+     --svg-dir svgx_svgs \
+     --img-dir svgx_imgs \
+     --meta svgx_meta.csv \
+     --epochs 2 \
+     --batch-size 4 \
+     --wandb-project "your-project-name" \
+     --wandb-name "optional-run-name"
 ```
 
 ## Project Overview

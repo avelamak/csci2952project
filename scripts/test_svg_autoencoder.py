@@ -202,8 +202,8 @@ class SimpleSVGAutoencoder(nn.Module):
 class DebugTrainer(Trainer):
     """Extended trainer with gradient checking"""
 
-    def __init__(self, *args, check_gradients=False, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, *args, check_gradients=False, wandb_project=None, cfg=None, **kwargs):
+        super().__init__(*args, wandb_project=wandb_project, cfg=cfg, **kwargs)
         self.check_gradients = check_gradients
         self.first_step_done = False
 
@@ -269,17 +269,34 @@ class DebugTrainer(Trainer):
                     if self.scheduler:
                         self.scheduler.step()
                     run += float(loss.detach())
+                    global_step = ep * len(train_loader) + i
                     if self.tb and i % log_every == 0:
-                        self.tb.add_scalar("train/loss", run / (i + 1), ep * len(train_loader) + i)
+                        self.tb.add_scalar("train/loss", run / (i + 1), global_step)
                         if step.logs:
                             for k, v in step.logs.items():
-                                self.tb.add_scalar(f"train/{k}", v, ep * len(train_loader) + i)
+                                self.tb.add_scalar(f"train/{k}", v, global_step)
+                    if self.wandb_run and i % log_every == 0:
+                        wandb_logs = {
+                            "train/loss": run / (i + 1),
+                            "epoch": ep,
+                            "step": global_step,
+                        }
+                        if step.logs:
+                            for k, v in step.logs.items():
+                                wandb_logs[f"train/{k}"] = v
+                        self.wandb_run.log(wandb_logs)
                     progress.advance(batch_task)
                 progress.advance(epoch_task)
                 logger.info(f"epoch {ep + 1}/{max_epochs} done")
 
                 if val_loader:
                     self.validate(val_loader, ep)
+
+        # Finish wandb run after training completes
+        if self.wandb_run:
+            import wandb
+
+            wandb.finish()
 
 
 def create_dataloaders(args):
@@ -354,7 +371,7 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
-    parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
+    parser.add_argument("--log-every", type=int, default=1, help="Log every N steps")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument(
         "--tb-dir", type=str, default="runs/test_autoencoder", help="TensorBoard dir"
@@ -365,6 +382,15 @@ def main():
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
     parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode (print shapes & gradients)"
+    )
+
+    # Wandb args
+    parser.add_argument(
+        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
+    )
+    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
+    parser.add_argument(
+        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
     )
 
     args = parser.parse_args()
@@ -403,9 +429,43 @@ def main():
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # Create trainer
+    # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
+
+    # Prepare wandb config (combine model config + training args)
+    wandb_config = None
+    if args.wandb_project:
+        wandb_config = {
+            # Model config
+            "max_num_groups": cfg.max_num_groups,
+            "max_seq_len": cfg.max_seq_len,
+            "encode_stages": cfg.encode_stages,
+            "decode_stages": cfg.decode_stages,
+            "use_vae": cfg.use_vae,
+            "d_model": cfg.d_model,
+            "n_layers": cfg.n_layers,
+            "n_layers_decode": cfg.n_layers_decode,
+            "n_heads": cfg.n_heads,
+            "dim_feedforward": cfg.dim_feedforward,
+            "dim_z": cfg.dim_z,
+            "dropout": cfg.dropout,
+            # Training args
+            "batch_size": args.batch_size,
+            "epochs": args.epochs,
+            "lr": args.lr,
+            "grad_clip": args.grad_clip,
+            "num_workers": args.num_workers,
+            "log_every": args.log_every,
+            "device": str(device),
+            "amp": False,
+            "n_params": n_params,
+        }
+        logger.info(
+            f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
+        )
+
+    # Create trainer
 
     trainer = DebugTrainer(
         model=model,
@@ -415,6 +475,8 @@ def main():
         tb_dir=args.tb_dir,
         amp=False,  # Disable AMP for debugging
         check_gradients=args.debug,
+        wandb_project=args.wandb_project,
+        cfg=wandb_config,
     )
 
     # Run training
