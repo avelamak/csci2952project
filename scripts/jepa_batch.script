@@ -19,9 +19,9 @@
 
 # --- Start of slurm commands -----------
 
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 
-#SBATCH --mem=128G
+#SBATCH --mem=64G
 #SBATCH --cpus-per-task=6
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
@@ -43,4 +43,6 @@ python scripts/train_jepa.py \
     --lr 1e-4 \
     --log-every 1 \
     --num-workers 0 \
-    --wandb-project "vecssl_jepa"
+    --wandb-project "vecssl_jepa" \
+    --checkpoint-dir ./checkpoints \
+    --save-every 1

@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -120,6 +121,15 @@ def main():
         "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
     )
 
+    # Checkpoint args
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default=None, help="Directory to save checkpoints"
+    )
+    parser.add_argument("--save-every", type=int, default=1, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--resume-from", type=str, default=None, help="Path to checkpoint to resume from"
+    )
+
     args = parser.parse_args()
 
     setup_logging(
@@ -151,6 +161,24 @@ def main():
     # Create trainer
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
+
+    # Load checkpoint if resuming
+    start_epoch = 0
+    if args.resume_from:
+        from vecssl.trainer import load_chkpt
+
+        logger.info(
+            f"Resuming from checkpoint: [bold]{args.resume_from}[/bold]", extra={"markup": True}
+        )
+        metadata = load_chkpt(
+            checkpoint_path=args.resume_from,
+            model=model,
+            optimizer=optimizer,
+            scheduler=None,  # No scheduler in this script
+            device=device,
+        )
+        start_epoch = metadata["epoch"] + 1
+        logger.info(f"Resuming training from epoch {start_epoch}", extra={"markup": True})
 
     # Prepare wandb config (combine model config + training args)
     wandb_config = None
@@ -190,6 +218,7 @@ def main():
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
+        checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
         device=device,
         grad_clip=args.grad_clip,
         tb_dir=args.tb_dir,
@@ -206,6 +235,8 @@ def main():
             val_loader=val_loader,
             max_epochs=args.epochs,
             log_every=args.log_every,
+            save_every=args.save_every,
+            start_epoch=start_epoch,
         )
         logger.info(
             "[bold green]✓ Training completed successfully![/bold green]", extra={"markup": True}

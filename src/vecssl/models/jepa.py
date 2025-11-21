@@ -71,13 +71,13 @@ class Jepa(JointModel):
             z_svg = self.resnet(z_svg)
         z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
-        z_svg = self.predictor(z_svg.squeeze())
+        z_svg = self.predictor(z_svg)
 
         z_img = self.image_encoder(images)
         z_img = self.image_projector(z_img)
 
-        z_svg = F.normalize(z_svg, dim=-1)
-        z_img = F.normalize(z_img, dim=-1)
+        # z_svg = F.normalize(z_svg, dim=-1)
+        # z_img = F.normalize(z_img, dim=-1)
 
         loss = self.loss(z_svg, z_img)
 
