@@ -101,6 +101,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
     parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--weight-decay", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
@@ -156,7 +157,7 @@ def main():
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
     # Create optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # Create trainer
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")

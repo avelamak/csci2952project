@@ -145,5 +145,5 @@ class JepaConfig(_DefaultConfig):
         self.d_joint = 1024
         self.predictor_num_heads = 4
         self.predictor_num_layers = 2
-        self.predictor_hidden_dim = 512
-        self.predictor_dropout = 0.1
+        self.predictor_hidden_dim = 128
+        self.predictor_dropout = 0.3

@@ -24,10 +24,13 @@ class Predictor(nn.Module):
             self.transformer_layer, num_layers=num_layers
         )
 
+        self.layer_norm = nn.LayerNorm(embed_dim)
+
         self.output_layer = nn.Linear(embed_dim, embed_dim)
 
     def forward(self, x):  # x is of shape [batch, seq_len, emb_sz]
         transformer_out = self.transformer_encoder(x)
+        transformer_out = self.layer_norm(transformer_out)
         z_pred = transformer_out.mean(dim=1)  # Pooling over seq_len
         z_pred = self.output_layer(z_pred)
         return z_pred
@@ -54,9 +57,11 @@ class Jepa(JointModel):
             self.image_encoder = DINOImageEncoder()
             for param in self.image_encoder.parameters():
                 param.requires_grad = False
-        self.image_projector = nn.Linear(
-            self.image_encoder.backbone.config.hidden_size, cfg.d_joint
-        )
+            self.image_projector = nn.Linear(
+                self.image_encoder.backbone.config.hidden_size, cfg.d_joint
+            )
+            for param in self.image_projector.parameters():
+                param.requires_grad = False
 
     def forward(self, batch):
         device = next(self.parameters()).device
@@ -72,12 +77,12 @@ class Jepa(JointModel):
         z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
         z_svg = self.predictor(z_svg)
+        z_svg = F.normalize(z_svg, dim=-1)
 
-        z_img = self.image_encoder(images)
-        z_img = self.image_projector(z_img)
-
-        # z_svg = F.normalize(z_svg, dim=-1)
-        # z_img = F.normalize(z_img, dim=-1)
+        with torch.no_grad():
+            z_img = self.image_encoder(images)
+            z_img = self.image_projector(z_img)
+            z_img = F.normalize(z_img, dim=-1)
 
         loss = self.loss(z_svg, z_img)
 
@@ -87,6 +92,7 @@ class Jepa(JointModel):
     def loss(self, z_svg, z_img):
         return F.mse_loss(z_svg, z_img)
 
+    @torch.no_grad()
     def encode_joint(self, batch):
         device = next(self.parameters()).device
 
@@ -96,12 +102,15 @@ class Jepa(JointModel):
 
         commands_enc, args_enc = _make_seq_first(commands, args)
         z_svg = self.svg_encoder(commands_enc, args_enc)
+        if self.cfg.use_resnet:
+            z_svg = self.resnet(z_svg)
+        z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
         z_svg = self.predictor(z_svg)
-
-        seq_len = z_svg.shape[1]
-        z_img = self.image_encoder(images, seq_len)
-
         z_svg = F.normalize(z_svg, dim=-1)
+
+        z_img = self.image_encoder(images)
+        z_img = self.image_projector(z_img)
         z_img = F.normalize(z_img, dim=-1)
+
         return {"svg": z_svg, "img": z_img}
