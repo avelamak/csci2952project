@@ -132,5 +132,6 @@ class HierarchicalSelfMatching(_DefaultConfig):
 class MAEConfig(_DefaultConfig):
     def __init__(self):
         super().__init__()
+        self.patch_ratio = 0.98
 
         self.decoder_embed_dim = 768
