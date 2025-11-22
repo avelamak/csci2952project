@@ -8,7 +8,7 @@ from vecssl.util import _make_seq_first, _make_batch_first
 from vecssl.models.basic_blocks import ResNet
 
 
-class Predictor(nn.Module):
+class PredictorTransformer(nn.Module):
     def __init__(self, embed_dim, num_heads, num_layers, hidden_dim, dropout):
         super().__init__()
 
@@ -36,6 +36,30 @@ class Predictor(nn.Module):
         return z_pred
 
 
+class PredictorMLP(nn.Module):
+    def __init__(self, embed_dim, hidden_dim, num_layers, dropout):
+        super().__init__()
+
+        layers = []
+        in_dim = embed_dim
+
+        # Build MLP with (num_layers - 1) hidden layers
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(in_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            in_dim = hidden_dim
+
+        layers.append(nn.Linear(in_dim, embed_dim))
+
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, x):  # x: [batch, seq_len, embed_dim]
+        x_pooled = x.mean(dim=1)  # [# Pool along sequence dimension (same as transformer version)
+        z_pred = self.mlp(x_pooled)
+        return z_pred
+
+
 class Jepa(JointModel):
     def __init__(self, cfg: JepaConfig):
         super().__init__()
@@ -45,13 +69,22 @@ class Jepa(JointModel):
         if cfg.use_resnet:
             self.resnet = ResNet(cfg.d_model)
         self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
-        self.predictor = Predictor(
-            embed_dim=cfg.d_joint,
-            num_heads=cfg.predictor_num_heads,
-            num_layers=cfg.predictor_num_layers,
-            hidden_dim=cfg.predictor_hidden_dim,
-            dropout=cfg.predictor_dropout,
-        )
+
+        if cfg.predictor_type == "transformer":
+            self.predictor = PredictorTransformer(
+                embed_dim=cfg.d_joint,
+                num_heads=cfg.predictor_transformer_num_heads,
+                num_layers=cfg.predictor_transformer_num_layers,
+                hidden_dim=cfg.predictor_transformer_hidden_dim,
+                dropout=cfg.predictor_transformer_dropout,
+            )
+        else:
+            self.predictor = PredictorMLP(
+                embed_dim=cfg.d_joint,
+                hidden_dim=cfg.predictor_mlp_hidden_dim,
+                num_layers=cfg.predictor_mlp_num_layers,
+                dropout=cfg.predictor_mlp_dropout,
+            )
 
         with torch.no_grad():
             self.image_encoder = DINOImageEncoder()
@@ -106,7 +139,7 @@ class Jepa(JointModel):
             z_svg = self.resnet(z_svg)
         z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
-        z_svg = self.predictor(z_svg)
+        z_svg = z_svg.mean(dim=1)
         z_svg = F.normalize(z_svg, dim=-1)
 
         z_img = self.image_encoder(images)
