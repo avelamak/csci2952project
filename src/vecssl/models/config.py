@@ -142,8 +142,16 @@ class JepaConfig(_DefaultConfig):
     def __init__(self):
         super().__init__()
 
-        self.d_joint = 1024
-        self.predictor_num_heads = 4
-        self.predictor_num_layers = 2
-        self.predictor_hidden_dim = 128
-        self.predictor_dropout = 0.3
+        self.d_joint = 512
+
+        self.use_resnet = False
+        self.predictor_type = "mlp"
+
+        self.predictor_transformer_num_heads = 4
+        self.predictor_transformer_num_layers = 2
+        self.predictor_transformer_hidden_dim = 128
+        self.predictor_transformer_dropout = 0.3
+
+        self.predictor_mlp_num_layers = 2
+        self.predictor_mlp_hidden_dim = 768
+        self.predictor_mlp_dropout = 0.1

@@ -127,7 +127,7 @@ def main():
 
     dataloader = create_dataloaders(args)
 
-    svg_embeds, img_embeds = get_embeddings(model, dataloader, device)
+    svg_embeds, img_embeds = get_embeddings(model, dataloader)
 
     run_pca(svg_embeds, tag="svg")
     run_pca(img_embeds, tag="img")

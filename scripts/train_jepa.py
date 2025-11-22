@@ -95,13 +95,15 @@ def main():
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
-    parser.add_argument("--use-resnet", action="store_true", default=True, help="Use ResNet")
+    parser.add_argument("--use-resnet", action="store_true", default=False, help="Use ResNet")
+    parser.add_argument(
+        "--predictor-type", type=str, default="mlp", help="Type of predictor (transformer/mlp)"
+    )
 
     # Training args
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
     parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--weight-decay", type=float, default=1e-2, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
@@ -145,6 +147,7 @@ def main():
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
     cfg.use_resnet = args.use_resnet
+    cfg.predictor_type = args.predictor_type
 
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
@@ -157,7 +160,7 @@ def main():
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
     # Create optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Create trainer
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -189,6 +192,7 @@ def main():
             "max_num_groups": cfg.max_num_groups,
             "max_seq_len": cfg.max_seq_len,
             "use_resnet": cfg.use_resnet,
+            "predictor_type": cfg.predictor_type,
             "d_model": cfg.d_model,
             "n_layers": cfg.n_layers,
             "n_layers_decode": cfg.n_layers_decode,
@@ -197,10 +201,13 @@ def main():
             "dim_z": cfg.dim_z,
             "dropout": cfg.dropout,
             "d_joint": cfg.d_joint,
-            "predictor_num_heads": cfg.predictor_num_heads,
-            "predictor_num_layers": cfg.predictor_num_layers,
-            "predictor_hidden_dim": cfg.predictor_hidden_dim,
-            "predictor_dropout": cfg.predictor_dropout,
+            "predictor_transformer_num_heads": cfg.predictor_transformer_num_heads,
+            "predictor_transformer_num_layers": cfg.predictor_transformer_num_layers,
+            "predictor_transformer_hidden_dim": cfg.predictor_transformer_hidden_dim,
+            "predictor_transformer_dropout": cfg.predictor_transformer_dropout,
+            "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
+            "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
+            "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
             # Training args
             "batch_size": args.batch_size,
             "epochs": args.epochs,
