@@ -1,0 +1,43 @@
+#!/bin/bash
+
+# This is an example batch script for slurm on Oscar
+#
+# The commands for slurm start with #SBATCH
+# All slurm commands need to come before the program
+# you want to run.  In this example, 'echo "Hello World!"
+# is the command we are running.
+#
+# This is a bash script, so any line that starts with # is
+# a comment.  If you need to comment out an #SBATCH line
+# use ##SBATCH
+#
+# To submit this script to slurm do:
+#    sbatch batch.script
+#
+# Once the job starts you will see a file MySerialJob-****.out
+# The **** will be the slurm JobID
+
+# --- Start of slurm commands -----------
+
+#SBATCH --time=12:00:00
+
+#SBATCH --mem=128G
+#SBATCH --cpus-per-task=16
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+
+#SBATCH -J Download
+#SBATCH -o Download-%j.out
+#SBATCH -e Download-%j.err
+
+#----- End of slurm commands ----
+
+
+source .venv/bin/activate
+
+python scripts/preprocess.py \
+    --output_meta_file svgx_meta.csv \
+    --output_svg_folder svgx_svgs \
+    --output_img_folder svgx_imgs \
+    --workers 16
