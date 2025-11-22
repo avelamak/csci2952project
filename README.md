@@ -26,6 +26,9 @@ python scripts/preprocess.py \
     --workers <n_workers> \
     --max_samples <max_samples>  # defaults to entire dataset
 ```
+Request 128GB memory, 16 cores, 1 GPU in Code Server then execute the download_batch.script file.
+
+
 
 ### Test run with autoencoder
 
