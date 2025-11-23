@@ -2,6 +2,7 @@
 svgx_imgs/
 svgx_svgs/
 svgx_meta.csv
+out
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -210,3 +211,5 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+runs/
