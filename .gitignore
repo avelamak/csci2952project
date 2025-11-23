@@ -3,11 +3,20 @@ svgx_imgs/
 svgx_svgs/
 svgx_meta.csv
 runs/
+wandb/
+
+# PCA files
+pca_img.png
+pca_svg.png
+
+# Checkpoints
+checkpoints/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
 *$py.class
+.DS_Store
 
 # C extensions
 *.so
@@ -31,6 +40,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+uv.lock
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

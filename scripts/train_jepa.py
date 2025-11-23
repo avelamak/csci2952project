@@ -1,6 +1,7 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -94,7 +95,10 @@ def main():
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
-    parser.add_argument("--use-resnet", action="store_true", default=True, help="Use ResNet")
+    parser.add_argument("--use-resnet", action="store_true", default=False, help="Use ResNet")
+    parser.add_argument(
+        "--predictor-type", type=str, default="mlp", help="Type of predictor (transformer/mlp)"
+    )
 
     # Training args
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
@@ -120,6 +124,15 @@ def main():
         "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
     )
 
+    # Checkpoint args
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default=None, help="Directory to save checkpoints"
+    )
+    parser.add_argument("--save-every", type=int, default=1, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--resume-from", type=str, default=None, help="Path to checkpoint to resume from"
+    )
+
     args = parser.parse_args()
 
     setup_logging(
@@ -134,6 +147,7 @@ def main():
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
     cfg.use_resnet = args.use_resnet
+    cfg.predictor_type = args.predictor_type
 
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
@@ -152,6 +166,24 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
 
+    # Load checkpoint if resuming
+    start_epoch = 0
+    if args.resume_from:
+        from vecssl.trainer import load_chkpt
+
+        logger.info(
+            f"Resuming from checkpoint: [bold]{args.resume_from}[/bold]", extra={"markup": True}
+        )
+        metadata = load_chkpt(
+            checkpoint_path=args.resume_from,
+            model=model,
+            optimizer=optimizer,
+            scheduler=None,  # No scheduler in this script
+            device=device,
+        )
+        start_epoch = metadata["epoch"] + 1
+        logger.info(f"Resuming training from epoch {start_epoch}", extra={"markup": True})
+
     # Prepare wandb config (combine model config + training args)
     wandb_config = None
     if args.wandb_project:
@@ -160,6 +192,7 @@ def main():
             "max_num_groups": cfg.max_num_groups,
             "max_seq_len": cfg.max_seq_len,
             "use_resnet": cfg.use_resnet,
+            "predictor_type": cfg.predictor_type,
             "d_model": cfg.d_model,
             "n_layers": cfg.n_layers,
             "n_layers_decode": cfg.n_layers_decode,
@@ -168,10 +201,13 @@ def main():
             "dim_z": cfg.dim_z,
             "dropout": cfg.dropout,
             "d_joint": cfg.d_joint,
-            "predictor_num_heads": cfg.predictor_num_heads,
-            "predictor_num_layers": cfg.predictor_num_layers,
-            "predictor_hidden_dim": cfg.predictor_hidden_dim,
-            "predictor_dropout": cfg.predictor_dropout,
+            "predictor_transformer_num_heads": cfg.predictor_transformer_num_heads,
+            "predictor_transformer_num_layers": cfg.predictor_transformer_num_layers,
+            "predictor_transformer_hidden_dim": cfg.predictor_transformer_hidden_dim,
+            "predictor_transformer_dropout": cfg.predictor_transformer_dropout,
+            "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
+            "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
+            "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
             # Training args
             "batch_size": args.batch_size,
             "epochs": args.epochs,
@@ -190,6 +226,7 @@ def main():
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
+        checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
         device=device,
         grad_clip=args.grad_clip,
         tb_dir=args.tb_dir,
@@ -206,6 +243,8 @@ def main():
             val_loader=val_loader,
             max_epochs=args.epochs,
             log_every=args.log_every,
+            save_every=args.save_every,
+            start_epoch=start_epoch,
         )
         logger.info(
             "[bold green]✓ Training completed successfully![/bold green]", extra={"markup": True}

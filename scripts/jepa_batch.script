@@ -19,12 +19,13 @@
 
 # --- Start of slurm commands -----------
 
-#SBATCH --time=2:00:00
+#SBATCH --time=24:00:00
 
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=6
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
+#SBATCH --nodes=1
 
 #SBATCH -J JEPA
 #SBATCH -o JEPA-%j.out
@@ -36,9 +37,13 @@
 source .venv/bin/activate
 wandb login
 
-uv run scripts/train_jepa.py \
-    --batch-size 4 \
-    --epoch 1 \
-    --lr 1e-4 \
+python scripts/train_jepa.py \
+    --batch-size 64 \
+    --epoch 100 \
+    --lr 3e-4 \
     --log-every 1 \
-    --wandb-project "vecssl_jepa"
+    --predictor-type mlp \
+    --num-workers 0 \
+    --wandb-project vecssl_jepa \
+    --checkpoint-dir ./checkpoints \
+    --save-every 1

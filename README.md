@@ -60,6 +60,12 @@ python scripts/test_svg_autoencoder.py \
      --wandb-name "optional-run-name"
 ```
 
+**Run PCA on Joint Embedding space**
+```bash
+python scripts/latent_pca.py \
+    --checkpoint <checkpoint_path>
+```
+
 ## Project Overview
 
 ### Goals
