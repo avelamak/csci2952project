@@ -25,6 +25,11 @@ class MultiMAEModel(JointModel):
         self.image_encoder.heads = nn.Identity()  # Remove classification head
         self.image_encoder = self.image_encoder.float()
 
+        self.mask_token_cmd = nn.Parameter(torch.randn(self.cfg.d_model))
+
+        # Mask token for arguments (one vector per argument slot)
+        self.mask_token_args = nn.Parameter(torch.randn(self.cfg.n_args, self.cfg.args_dim))
+
         ##what is this step doing??
         # img_dim = self.image_encoder.hidden_dim
         self.logger.info(
@@ -77,7 +82,7 @@ class MultiMAEModel(JointModel):
 
         return x, mask, ids_restore
 
-    def mask_svgs(
+    def mask_svgs_wrong(
         self, commands, args, mask_ratio=0.15, pad_val=-1, mask_token_cmd=None, mask_token_args=None
     ):
         """
@@ -101,9 +106,37 @@ class MultiMAEModel(JointModel):
                 mask_positions[perm, g, b] = True
 
         commands_masked[mask_positions] = pad_val
-        args_masked[mask_positions] = pad_val
+        args_masked[mask_positions] = 0
 
         return commands_masked, args_masked, mask_positions
+
+    def mask_svgs(
+        self, commands, args, mask_ratio=0.15, pad_val=-1, mask_token_cmd=None, mask_token_args=None
+    ):
+        """
+        The goal is to first mask out entire commands and their correspodning args.
+        """
+        # if we are masking out singular commands in the matrix, how are we going to encode the masked command in the commands tensor, and the masked commands + row in the args tensor?, cause the encoder works on taking the whole tensor into the latent space
+        # with image patches it made sense cause the encoder would work on each patch and what was being masked was the same unit as the encoder (it was all patches)
+
+        # how do I mask specific rows and cols in the tensor and then somehow add them back for my decoder in the latent space? It doesn't make a lot of sense because it isn't as structurally similar to masking patches
+        # If I understand the pipeline correctly it goes:
+        # you have your input say 100 arbitrary dims
+        # say you mask 20 of these 100 dims
+        # you record the positional embedding of these 20 dims
+        # you give your 80 unmasked dims to the encoder
+        # it encodes each of them into 80 latent dim (say dim z) vectors
+        #
+        # The you separately encode the 20 dims (how is this done, how are the masked tokens embedded into the same latent dim? Is it using the same encoder?)
+        # so you just don't encode them at all
+        # instead you create 20 learned mask tokens (trainable embeddings), these are also learned
+        # then you add positional embeddings to all of them
+
+        # now you have 20 masked embeddings in latent z dim
+        # then you concatenate these 20 masked embeddings with the 80 unmasked dims to get a masked representation of your 100 dim input in latent space
+        # your decoder then takes these 100 dims and tries to recreate the original 100 dims image (including the masked tokens)
+
+        # return commands_masked, args_masked, mask_positions
 
     def forward(self, batch):
         """
@@ -126,6 +159,7 @@ class MultiMAEModel(JointModel):
         commands_enc, args_enc = _make_seq_first(cmds, args)
 
         ##masking time
+        # mask your
 
         # print(
         #     f"This is args shape after seq first {args_enc.shape} this is commands shape after seq first {commands_enc.shape}, this is img: {img.shape}"
