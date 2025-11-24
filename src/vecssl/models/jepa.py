@@ -47,6 +47,7 @@ class PredictorMLP(nn.Module):
         for _ in range(num_layers - 1):
             layers.append(nn.Linear(in_dim, hidden_dim))
             layers.append(nn.ReLU())
+            layers.append(nn.LayerNorm(hidden_dim))
             layers.append(nn.Dropout(dropout))
             in_dim = hidden_dim
 
@@ -55,8 +56,8 @@ class PredictorMLP(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, x):  # x: [batch, seq_len, embed_dim]
-        x_pooled = x.mean(dim=1)  # [# Pool along sequence dimension (same as transformer version)
-        z_pred = self.mlp(x_pooled)
+        z_pred = self.mlp(x)
+        z_pred = z_pred.mean(dim=1)  # Pool along sequence dimension (same as transformer version)
         return z_pred
 
 
@@ -68,7 +69,7 @@ class Jepa(JointModel):
         self.svg_encoder = Encoder(cfg)
         if cfg.use_resnet:
             self.resnet = ResNet(cfg.d_model)
-        self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
+        # self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
 
         if cfg.predictor_type == "transformer":
             self.predictor = PredictorTransformer(
@@ -107,7 +108,7 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        z_svg = self.svg_projector(z_svg)
+        # z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
         z_svg = self.predictor(z_svg)
         z_svg = F.normalize(z_svg, dim=-1)
@@ -137,7 +138,7 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        z_svg = self.svg_projector(z_svg)
+        # z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
         z_svg = z_svg.mean(dim=1)
         z_svg = F.normalize(z_svg, dim=-1)
