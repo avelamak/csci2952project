@@ -158,7 +158,138 @@ class Encoder(nn.Module):
                 hierarchical_encoder_layer, cfg.n_layers, hierarchical_encoder_norm
             )
 
-    def forward(self, commands, args, label=None):
+    def create_embeddings(self, commands, args):
+        S, G, N = commands.shape
+
+        return 0
+
+    def create_masks(self, commands, mask_ratio=0.5):
+        S, GN = commands.shape[:2]  # after _pack_group_batch
+        num_tokens = S * GN
+        num_to_mask = int(mask_ratio * num_tokens)
+
+        # Flatten indices
+        all_indices = torch.arange(num_tokens)
+        mask_indices = all_indices[torch.randperm(num_tokens)[:num_to_mask]]
+
+        # Boolean mask
+        mask_positions = torch.zeros(num_tokens, dtype=torch.bool, device=commands.device)
+        mask_positions[mask_indices] = True
+        mask_positions = mask_positions.view(S, GN)  # same shape as commands
+        return mask_positions
+
+    def simple_forward(self, commands, args, logger=None):
+        S, G, N = commands.shape
+        l = None
+
+        logger.info(
+            f"[bold green]This is command shape before anything {commands.shape} and this is args before anything {args.shape}[/bold green]",
+            extra={"markup": True},
+        )
+        # basically compresses G, and N dimension into a single G * N dim
+        # we now have G*N, S commands and G*N, S, Args arguments
+        # ignore l for now
+        if self.cfg.encode_stages == 2:
+            visibility_mask, key_visibility_mask = (
+                _get_visibility_mask(commands, seq_dim=0),
+                _get_key_visibility_mask(commands, seq_dim=0),
+            )
+
+        commands, args, l = _pack_group_batch(commands, args, l)
+
+        logger.info(
+            f"[bold green]This is command shape after _pack_group_batch  {commands.shape} and this is args after pack_group_batch {args.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # so we have 42 * 32 tokens in total
+        # GN = G * N
+
+        mask_positions = self.create_masks(commands)
+
+        logger.info(
+            f"[bold green]This is mask shape {mask_positions.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # Essentially masks out the pad tokens in the commands tensor
+        # padding_mask tells which embeddings to ignore when pooling the results of the transformer
+        # key padding mask tells the transformer which embeddings to ignore during self attention
+        # getting these masks from the commands is enough as it will effectively zero out the token (which was args + commands)
+        padding_mask, key_padding_mask = (
+            _get_padding_mask(commands, seq_dim=0),
+            _get_key_padding_mask(commands, seq_dim=0),
+        )
+
+        # this is relevant for generating group embeddings to add the context of which group a token belongs to
+        # only used for group embedding,
+        group_mask = _get_group_mask(commands, seq_dim=0) if self.use_group else None
+
+        # commands_flat = commands_enc.reshape(S, GN)            # [S, GN]
+        # args_flat = args_enc.reshape(S, GN, -1)                # [S, GN, n_args]
+        # groups_flat = group_index_tensor.reshape(S, GN)        # you can generate group indices 0..G-1 and broadcast per-batch
+
+        # These are all the embeddings, we need to mask some of these
+        src = self.embedding(commands, args, group_mask)
+
+        logger.info(
+            f"[bold green]This is embedding shape before encoding {src.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # only attends to unmasked tokens
+        memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask, memory2=l)
+
+        z = (memory * padding_mask).sum(dim=0, keepdim=True) / padding_mask.sum(dim=0, keepdim=True)
+
+        logger.info(
+            f"[bold green]This is embedding shape after encoding stage 1 {z.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # gets the batches back out, maybe it's better to process all the batches at once in a transformer?
+        # but now we have our z per batches, YAY!
+        # so now there are 4 svg latent dim vectors that encode 4 (batch size) svgs (aka 4 * S * G tokens) in the latent space
+        # awesome
+        # actually we have an embedding per group technically
+        z = _unpack_group_batch(N, z)
+
+        logger.info(
+            f"[bold green]This is embedding shape after unpacking stage 1 {z.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        if self.cfg.encode_stages == 2:
+            src = z.transpose(0, 1)
+            src = _pack_group_batch(src)
+            l = self.label_embedding(label).unsqueeze(0) if self.cfg.label_condition else None
+
+            if not self.cfg.self_match:
+                src = self.hierarchical_PE(src)
+
+            memory = self.hierarchical_encoder(
+                src, mask=None, src_key_padding_mask=key_visibility_mask, memory2=l
+            )
+            z = (memory * visibility_mask).sum(dim=0, keepdim=True) / visibility_mask.sum(
+                dim=0, keepdim=True
+            )
+
+            logger.info(
+                f"[bold green]This is embedding shape after encoding stage 2 {z.shape}[/bold green]",
+                extra={"markup": True},
+            )
+            z = _unpack_group_batch(N, z)
+
+            logger.info(
+                f"[bold green]This is embedding shape after unpacking stage 2 {z.shape}[/bold green]",
+                extra={"markup": True},
+            )
+
+        return z
+
+    def forward(self, commands, args, embeddings=None, label=None, use_simple=False, logger=None):
+        if use_simple:
+            return self.simple_forward(commands, args, logger)
         S, G, N = commands.shape
         l = (
             self.label_embedding(label).unsqueeze(0).unsqueeze(0).repeat(1, commands.size(1), 1, 1)
@@ -180,6 +311,9 @@ class Encoder(nn.Module):
         group_mask = _get_group_mask(commands, seq_dim=0) if self.use_group else None
 
         src = self.embedding(commands, args, group_mask)
+
+        # if embeddings:
+        #     src = embeddings
 
         if self.cfg.model_type == "transformer":
             memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask, memory2=l)

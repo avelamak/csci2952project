@@ -150,30 +150,34 @@ class MultiMAEModel(JointModel):
         # img = batch["image"].to(device)
         args = batch["args"].to(device)
         cmds = batch["commands"].to(device)
+        S, G, N = cmds.shape
+        # GN = G * N
 
         # print(
         #     f"This is args {args.shape} this is commands shape {cmds.shape}, this is img: {img.shape}"
         # )
 
         # make it seq first
+        # self.logger.info("[bold red]Making embeddings[/bold red]", extra={"markup": True})
         commands_enc, args_enc = _make_seq_first(cmds, args)
 
         ##masking time
-        # mask your
+        # let's generate all embeddings first
+        # src = self.svg_encoder.create_embeddings(cmds, args)
 
         # print(
         #     f"This is args shape after seq first {args_enc.shape} this is commands shape after seq first {commands_enc.shape}, this is img: {img.shape}"
         # )
         # what do we do here first, encode the SVG?
-        self.logger.info("[bold cyan]SVG Encoding...[/bold cyan]", extra={"markup": True})
+        # self.logger.info("[bold cyan]SVG Encoding...[/bold cyan]", extra={"markup": True})
 
         # what dim should z_svg be in [1,1,4,256], [4,256]?
         # default returns [1,1,4,256]
-        z_svg = self.svg_encoder(commands_enc, args_enc)
+        z_svg = self.svg_encoder(commands_enc, args_enc, use_simple=True, logger=self.logger)
 
-        self.logger.info(
-            "[bold cyan]SVG embedded in latent dim z[/bold cyan]", extra={"markup": True}
-        )
+        # self.logger.info(
+        #     "[bold cyan]SVG embedded in latent dim z[/bold cyan]", extra={"markup": True}
+        # )
 
         self.logger.info(
             f"[bold cyan]SVG embedded in latent dim z {z_svg.shape}[/bold cyan]",
@@ -197,8 +201,6 @@ class MultiMAEModel(JointModel):
             extra={"markup": True},
         )
 
-        PAD_VAL = -1
-
         # -------------------------
         # COMMANDS LOSS
         # -------------------------
@@ -215,19 +217,22 @@ class MultiMAEModel(JointModel):
 
         ##THIS WAS THE SOURCE OF SHAPE ERRORS, HOW BEST TO DEAL WITH PAD_VAL when working with reconstructions?
         ##Currently only compute loss on unpadded values
-        # Mask padding
-        mask = cmd_targets_flat != PAD_VAL
-        cmd_logits_flat = cmd_logits_flat[mask]
-        cmd_targets_flat = cmd_targets_flat[mask]
 
         # Compute CE
+        IGNORE = -100
+        pad_val = -1
+        # cmd_targets_safe = cmd_targets_flat.clone()
+        # cmd_targets_safe[cmd_targets_safe == pad_val] = IGNORE
+
+        # Compute cross-entropy with ignore index
+        # loss_cmd = F.cross_entropy(cmd_logits_flat, cmd_targets_safe, ignore_index=IGNORE)
+
+        # interestingly commands doesnt have any -1 values?
         loss_cmd = F.cross_entropy(cmd_logits_flat, cmd_targets_flat)
 
         # -------------------------
         # ARGS LOSS
         # -------------------------
-        # recon_args_logits: [seq_len, num_groups, batch, n_args, arg_dim]
-        # args_enc:          [seq_len_total, num_groups, batch, n_args]
 
         seq_len, num_groups, batch_size, n_args, arg_dim = recon_args_logits.shape
 
@@ -239,13 +244,21 @@ class MultiMAEModel(JointModel):
 
         ##THIS WAS THE SOURCE OF SHAPE ERRORS, HOW BEST TO DEAL WITH PAD_VAL when working with reconstructions?
         ##Currently only compute loss on unpadded values
-        # Mask padding
-        mask = args_targets_flat != PAD_VAL
-        args_logits_flat = args_logits_flat[mask]
-        args_targets_flat = args_targets_flat[mask]
 
-        # Compute CE
-        loss_args = F.cross_entropy(args_logits_flat, args_targets_flat)
+        args_targets_safe = args_targets_flat.clone()
+        args_targets_safe[args_targets_safe == pad_val] = IGNORE
+
+        loss_args = F.cross_entropy(args_logits_flat, args_targets_safe, ignore_index=IGNORE)
+
+        # self.logger.info(
+        #     f"[bold green]args target shape before loss{args_targets_safe.shape}[/bold green]",
+        #     extra={"markup": True},
+        # )
+
+        # self.logger.info(
+        #     f"[bold green]recon_args_logits shape {recon_args_logits.shape}[/bold green]",
+        #     extra={"markup": True},
+        # )
 
         # -------------------------
         # TOTAL LOSS
