@@ -125,11 +125,14 @@ def main():
 
     # Wandb args
     parser.add_argument(
-        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
+        "--wandb-project",
+        type=str,
+        default="vecssl",
+        help="Wandb project name (enables wandb if set)",
     )
     parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
     parser.add_argument(
-        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
+        "--wandb-entity", type=str, default="vecssl", help="Wandb entity/team (optional)"
     )
 
     args = parser.parse_args()
