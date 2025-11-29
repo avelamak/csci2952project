@@ -161,6 +161,14 @@ def main():
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
+    n_params = sum(p.numel() for p in model.svg_encoder.parameters() if p.requires_grad)
+    logger.info(f"Total parameters svg encoder: [bold]{n_params:,}[/bold]", extra={"markup": True})
+    n_params = sum(p.numel() for p in model.predictor.parameters() if p.requires_grad)
+    logger.info(f"Total parameters predictor: [bold]{n_params:,}[/bold]", extra={"markup": True})
+    n_params = sum(p.numel() for p in model.image_encoder.parameters() if p.requires_grad)
+    logger.info(
+        f"Total parameters image encoder: [bold]{n_params:,}[/bold]", extra={"markup": True}
+    )
 
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
