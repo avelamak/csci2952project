@@ -13,6 +13,7 @@ from rich.progress import (
     TimeRemainingColumn,
     TimeElapsedColumn,
     MofNCompleteColumn,
+    SpinnerColumn,
 )
 
 # We set a global Console variable so we
@@ -25,8 +26,8 @@ def setup_logging(
     log_file: Optional[str] = None,
     reset: bool = True,
     rich_tracebacks: bool = True,
-    show_level: bool = False,
-    show_path: bool = False,
+    show_level: bool = True,
+    show_path: bool = True,
 ) -> Console:
     """
     Configure root logging with a single RichHandler (console) and optional FileHandler.
@@ -81,6 +82,7 @@ def make_progress(console: Optional[Console] = None) -> Progress:
     """Progress that shares the same Console as the RichHandler."""
     console = console or get_console()
     return Progress(
+        SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),

@@ -49,8 +49,7 @@ class ContrastiveModel(JointModel):
         z_svg = self.encoder(commands_enc, args_enc)  # [batch, dim_z]
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        z_svg = np.squeeze(z_svg, axis=0)
-        z_svg = np.squeeze(z_svg, axis=0)
+        z_svg = z_svg.squeeze(0).squeeze(0)
         z_svg = self.svg_projection(z_svg)  # Project to joint space
 
         # Encode image
