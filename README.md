@@ -16,8 +16,10 @@ source .venv/bin/activate
 pre-commit install
 ```
 ### Download and process data
+
+#### Option 1: SVGX Dataset (Icons, Emojis, etc.)
 We are using [SVGX-Core-250k](https://huggingface.co/datasets/xingxm/SVGX-Core-250k). Download and preprocess this dataset with (this takes approximately 60-90 minutes depending on netowrk and cpu):
-```
+```bash
 # Download and preprocess SVGX-Core-250k dataset
 python scripts/preprocess.py \
     --output_meta_file svgx_meta.csv \
@@ -27,6 +29,47 @@ python scripts/preprocess.py \
     --max_samples <max_samples>  # defaults to entire dataset
 ```
 Request 128GB memory, 16 cores, 1 GPU in Code Server then execute the download_batch.script file.
+
+#### Option 2: Google Fonts (Glyphs A-Z, a-z, 0-9)
+Extract alphanumeric glyphs from Google Fonts for font-specific experiments:
+
+```bash
+# Step 1: Download Google Fonts (~1GB download, ~2GB extracted)
+./scripts/download_fonts.sh google_fonts
+
+# Step 2: Extract glyphs from TTF files to raw SVGs
+python scripts/extract_glyphs.py \
+    --input google_fonts \
+    --output data/fonts_raw \
+    --workers 8
+
+# Step 3: Preprocess SVGs and render PNGs
+python scripts/preprocess_fonts.py \
+    --input data/fonts_raw \
+    --output_meta_file data/fonts/metadata.csv \
+    --output_svg_folder data/fonts/svg \
+    --output_img_folder data/fonts/img \
+    --workers 8
+
+# Optional: Save as tensors instead of SVGs (faster loading)
+python scripts/preprocess_fonts.py \
+    --input data/fonts_raw \
+    --output_meta_file data/fonts/metadata.csv \
+    --output_svg_folder data/fonts/svg \
+    --output_img_folder data/fonts/img \
+    --workers 8 \
+    --to_tensor
+```
+
+This extracts ~62 glyphs (A-Z, a-z, 0-9) per font, resulting in ~100k+ glyph SVGs from the full Google Fonts collection.
+
+**For quick testing with a single font**, create a filtered metadata CSV:
+```python
+import pandas as pd
+df = pd.read_csv("data/fonts/metadata.csv")
+df_single = df[df["font_name"] == "Roboto"]  # or any font name
+df_single.to_csv("data/fonts/metadata_single.csv", index=False)
+```
 
 
 
