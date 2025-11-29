@@ -56,7 +56,8 @@ python scripts/test_svg_autoencoder.py \
      --meta svgx_meta.csv \
      --epochs 2 \
      --batch-size 4 \
-     --wandb-project "your-project-name" \
+     --wandb-project vecssl \
+     --wandb-entity vecssl \
      --wandb-name "optional-run-name"
 ```
 
