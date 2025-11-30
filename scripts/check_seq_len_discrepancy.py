@@ -42,12 +42,19 @@ def check_svg(svg_path: Path, verbose: bool = False):
         t_sep, fillings = svg.to_tensor(concat_groups=False), svg.to_fillings()
 
     # After add_sos + add_eos + pad (what dataset.py does)
+    # Match dataset.py exactly: pad t_sep to MAX_NUM_GROUPS, process ALL including empty
     MAX_SEQ_LEN = 40  # default from dataset
+    MAX_NUM_GROUPS = 8  # default from dataset
+
+    # Pad to MAX_NUM_GROUPS like dataset.py does
+    pad_len = max(MAX_NUM_GROUPS - len(t_sep), 0)
+    t_sep.extend([torch.empty(0, 14)] * pad_len)
+    fillings.extend([0] * pad_len)
+
     actual_lens = []
     cmds_shapes = []
     for t, f in zip(t_sep, fillings, strict=False):
-        if len(t) == 0:
-            continue
+        # Don't skip empty - process ALL groups like dataset.py does
         st = SVGTensor.from_data(t, PAD_VAL=-1, filling=f)
         st.add_eos().add_sos().pad(seq_len=MAX_SEQ_LEN + 2)
         actual_lens.append(len(st.commands))
