@@ -224,6 +224,39 @@ class SimpleSVGAutoencoder(nn.Module):
 
         return TrainStep(loss=loss_dict["loss"], logs=logs, extras={"output": output})
 
+    @torch.no_grad()
+    def encode_joint(self, batch):
+        """
+        Encode batch to joint embedding space (compatible with JEPA/Contrastive interface).
+
+        For autoencoder, we use the VAE mu (mean) as the embedding for deterministic eval.
+        Image embedding uses the same z (no separate image encoder).
+
+        Returns:
+            dict: {"svg": z, "img": z} where z is [B, dim_z]
+        """
+        from vecssl.util import _make_seq_first
+
+        device = next(self.parameters()).device
+        commands = batch["commands"].to(device)
+        args = batch["args"].to(device)
+
+        # Replicate encoding path but use mu for deterministic eval (no VAE sampling noise)
+        commands_enc, args_enc = _make_seq_first(commands, args)
+        z = self.model.encoder(commands_enc, args_enc, label=None)
+
+        if self.cfg.use_resnet:
+            z = self.model.resnet(z)
+
+        # Use mu directly (not sampled z) for deterministic embedding
+        mu = self.model.vae.enc_mu_fcn(z)
+
+        # Shape: [1, 1, B, dim_z] → [B, dim_z]
+        mu = mu.squeeze(0).squeeze(0)
+
+        # Return same embedding for both modalities (AE has no separate image encoder)
+        return {"svg": mu, "img": mu}
+
     def check_gradients(self):
         """Check gradient flow through the model"""
         gradient_info = {}
@@ -452,7 +485,7 @@ class DebugTrainer(Trainer):
                         ep=ep,
                     )
 
-                if val_loader:
+                if val_loader and ep % 5 == 0 and ep > 1:
                     self.validate(val_loader, ep)
 
         # Finish wandb run after training completes
@@ -498,7 +531,7 @@ def create_dataloaders(args):
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=True,  # Drop incomplete batches
+        drop_last=False,  # Drop incomplete batches
     )
 
     val_loader = DataLoader(

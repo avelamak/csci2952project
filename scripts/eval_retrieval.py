@@ -3,11 +3,21 @@ Retrieval Evaluation Script
 
 Compute Recall@k metrics for latent space retrieval.
 Supports same-modal (SVG→SVG) and cross-modal (SVG↔image) retrieval.
+Supports JEPA, Contrastive, and Autoencoder encoders.
+
+Note: For autoencoder, cross-modal retrieval is trivial (100%) since
+the same latent z is used for both SVG and image embeddings.
 
 Usage:
     python scripts/eval_retrieval.py \
         --encoder-type jepa \
         --checkpoint checkpoints/jepa/best_model.pt \
+        --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv
+
+    # Or with autoencoder:
+    python scripts/eval_retrieval.py \
+        --encoder-type autoencoder \
+        --checkpoint checkpoints/ae/checkpoint.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv
 """
 
@@ -92,7 +102,7 @@ def main():
         "--encoder-type",
         type=str,
         required=True,
-        choices=["jepa", "contrastive"],
+        choices=["jepa", "contrastive", "autoencoder"],
         help="Type of encoder",
     )
     parser.add_argument(
@@ -141,6 +151,11 @@ def main():
 
     logger.info("Computing image embeddings...")
     z_img, labels_img, uuids_img = compute_embeddings(encoder, loader, device, modality="img")
+
+    # Note for autoencoder
+    if args.encoder_type == "autoencoder":
+        logger.info("Note: Autoencoder uses same latent for SVG and image.")
+        logger.info("      Cross-modal retrieval will be trivial (identical embeddings).")
 
     ks = tuple(args.ks)
 

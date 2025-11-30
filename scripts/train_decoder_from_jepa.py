@@ -8,9 +8,9 @@ reconstruction.
 Usage:
     python scripts/train_decoder_from_jepa.py \
         --jepa-checkpoint checkpoints/jepa/best_model.pt \
-        --svg-dir data/svgx/svg \
-        --img-dir data/svgx/img \
-        --meta data/svgx/meta.csv \
+        --svg-dir svgx_svgs \
+        --img-dir svgx_imgs \
+        --meta svgx_meta.csv \
         --checkpoint-dir checkpoints/decoder \
         --epochs 100
 """
@@ -137,7 +137,7 @@ def transfer_encoder_weights(jepa: Jepa, ae_model: SimpleSVGAutoencoder) -> None
     """
     logger.info("Transferring encoder weights from JEPA")
     jepa_encoder_state = jepa.svg_encoder.state_dict()
-    ae_model.model.encoder.load_state_dict(jepa_encoder_state)
+    ae_model.model.encoder.load_state_dict(jepa_encoder_state, strict=False)
     logger.info("Transferred %d encoder parameter tensors", len(jepa_encoder_state))
 
     if hasattr(jepa, "resnet") and hasattr(ae_model.model, "resnet"):
