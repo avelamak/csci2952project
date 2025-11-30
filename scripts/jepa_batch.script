@@ -44,6 +44,7 @@ python scripts/train_jepa.py \
     --log-every 1 \
     --predictor-type mlp \
     --num-workers 0 \
-    --wandb-project vecssl_jepa \
+    --wandb-project vecssl \
+    --wandb-entity vecssl \
     --checkpoint-dir ./checkpoints \
     --save-every 1

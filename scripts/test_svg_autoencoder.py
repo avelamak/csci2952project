@@ -15,6 +15,9 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
+from vecssl.data.geom import Bbox
+from vecssl.data.svg import SVG
+from vecssl.data.svg_tensor import SVGTensor
 from vecssl.models.base import TrainStep
 from vecssl.models.config import _DefaultConfig
 from vecssl.models.loss import SVGLoss
@@ -24,6 +27,64 @@ from vecssl.util import setup_logging
 from vecssl.models.model import SVGTransformer
 
 logger = logging.getLogger(__name__)
+
+
+def decode_svg_from_cmd_args(
+    commands: torch.Tensor,
+    args: torch.Tensor,
+    viewbox_size: int = 256,  # Match ARGS_DIM quantization range
+    pad_val: int = -1,
+) -> SVG:
+    """
+    Decode commands and args tensors back to an SVG object.
+
+    Args:
+        commands: [S] or [G, S] long tensor of command indices
+        args: [S, 11] or [G, S, 11] float tensor of arguments
+        viewbox_size: Size of the SVG viewbox (default 24)
+        pad_val: Padding value used (default -1)
+
+    Returns:
+        SVG object that can be saved via .save_svg()
+    """
+    # If we have multiple groups, just take the first one for debugging
+    if commands.ndim == 2:
+        commands = commands[0]
+        args = args[0]
+
+    commands = commands.detach().cpu()
+    args = args.detach().cpu().float()
+
+    # Find actual sequence length (before EOS/padding)
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+    valid_mask = (commands != pad_val) & (commands != eos_idx)
+
+    if valid_mask.any():
+        # Find last valid command
+        seq_len = valid_mask.long().sum().item()
+    else:
+        seq_len = 0
+
+    if seq_len == 0:
+        # Return empty SVG
+        return SVG([], viewbox=Bbox(viewbox_size))
+
+    # Truncate to valid length
+    commands = commands[:seq_len]
+    args = args[:seq_len]
+
+    # Create SVGTensor from commands and args
+    svg_tensor = SVGTensor.from_cmd_args(
+        commands,
+        args,
+        PAD_VAL=pad_val,
+    )
+
+    # Get full data tensor (14 columns) and convert to SVG
+    tensor_data = svg_tensor.data
+    svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
+
+    return svg
 
 
 def custom_collate(batch):
@@ -208,6 +269,82 @@ class DebugTrainer(Trainer):
         self.check_gradients = check_gradients
         self.first_step_done = False
 
+    def _maybe_visualize_batch(self, batch, step, ep, i, out_dir="debug_svgs"):
+        """Save GT and predicted SVGs for visualization."""
+        if i != 0:
+            return
+
+        logger.info(f"[viz] Attempting visualization for epoch {ep}")
+
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+
+        # ---------------- GT SVG ----------------
+        output = step.extras.get("output", None)
+        if output is None:
+            logger.warning("[viz] No output in step.extras")
+            return
+
+        tgt_commands = output.get("tgt_commands")  # [B, G, S]
+        tgt_args = output.get("tgt_args")  # [B, G, S, n_args]
+
+        if tgt_commands is None or tgt_args is None:
+            logger.warning("[viz] Missing tgt_commands or tgt_args")
+            return
+
+        b = 0  # first sample in batch
+
+        # Skip SOS at position 0
+        gt_cmd = tgt_commands[b, :, 1:]  # [G, S-1]
+        gt_args = tgt_args[b, :, 1:]  # [G, S-1, n_args]
+
+        try:
+            gt_svg = decode_svg_from_cmd_args(gt_cmd, gt_args)
+            gt_path = Path(out_dir) / f"ep{ep:03d}_gt.svg"
+            gt_svg.save_svg(str(gt_path))
+        except Exception as e:
+            logger.warning(f"[viz] Failed to save GT SVG: {e}")
+
+        # ---------------- Predicted SVG (via greedy_sample) ----------------
+        device = self.device
+        model = self.model  # SimpleSVGAutoencoder wrapper
+
+        # Take the same sample as input to the encoder
+        enc_commands = batch["commands"][b : b + 1].to(device)  # [1, G, S]
+        enc_args = batch["args"][b : b + 1].to(device)  # [1, G, S, n_args]
+
+        with torch.no_grad():
+            # Use the SVGTransformer's own sampling logic
+            commands_y, args_y = model.model.greedy_sample(
+                commands_enc=enc_commands,
+                args_enc=enc_args,
+                commands_dec=None,
+                args_dec=None,
+                label=None,
+                z=None,
+                hierarch_logits=None,
+                concat_groups=True,  # flatten groups into one sequence
+                temperature=0.0001,
+            )
+
+        # commands_y: [N, S'], args_y: [N, S', n_args], with N=1 here
+        cmd_names = SVGTensor.COMMANDS_SIMPLIFIED
+        first_seq = commands_y[0].cpu().tolist()
+        decoded_cmds = [
+            cmd_names[int(c)] if 0 <= int(c) < len(cmd_names) else f"?{c}" for c in first_seq[:10]
+        ]
+        logger.info(f"[viz] Pred cmds (first 10 via greedy_sample): {decoded_cmds}")
+
+        try:
+            pred_svg = decode_svg_from_cmd_args(
+                commands_y[0].cpu(),
+                args_y[0].cpu().float(),
+            )
+            pred_path = Path(out_dir) / f"ep{ep:03d}_pred.svg"
+            pred_svg.save_svg(str(pred_path))
+            logger.info(f"[viz] Saved SVGs to {out_dir}/ep{ep:03d}_*.svg")
+        except Exception as e:
+            logger.warning(f"[viz] Failed to save pred SVG: {e}")
+
     def run(
         self,
         train_loader,
@@ -234,6 +371,10 @@ class DebugTrainer(Trainer):
                     with torch.amp.autocast_mode.autocast(device.type):
                         step = self.model(batch)
                         loss = step.loss
+
+                    # Visualize once per epoch (first batch)
+                    self._maybe_visualize_batch(batch, step, ep, i)
+
                     scaler.scale(loss).backward()
 
                     # Check gradients on first step
@@ -332,7 +473,7 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.1,
+        train_ratio=1,
         already_preprocessed=True,
     )
 
@@ -343,7 +484,7 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.1,
+        train_ratio=1,
         already_preprocessed=True,
     )
 
@@ -408,11 +549,14 @@ def main():
 
     # Wandb args
     parser.add_argument(
-        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
+        "--wandb-project",
+        type=str,
+        default="vecssl",
+        help="Wandb project name (enables wandb if set)",
     )
     parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
     parser.add_argument(
-        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
+        "--wandb-entity", type=str, default="vecssl", help="Wandb entity/team (optional)"
     )
 
     # Checkpoint args
