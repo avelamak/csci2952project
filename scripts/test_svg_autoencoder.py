@@ -485,7 +485,7 @@ class DebugTrainer(Trainer):
                         ep=ep,
                     )
 
-                if val_loader:
+                if val_loader and ep % 5 == 0 and ep > 1:
                     self.validate(val_loader, ep)
 
         # Finish wandb run after training completes
@@ -531,7 +531,7 @@ def create_dataloaders(args):
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=True,  # Drop incomplete batches
+        drop_last=False,  # Drop incomplete batches
     )
 
     val_loader = DataLoader(
