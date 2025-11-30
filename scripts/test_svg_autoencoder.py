@@ -248,8 +248,11 @@ class SimpleSVGAutoencoder(nn.Module):
             encode_mode=True,
         )
 
-        # z is [1, B, dim_z] from encoder, squeeze to [B, dim_z]
+        # z has shape [1, G, B, dim_z] from encoder (seq=1, groups=G, batch=B, dim_z)
+        # Squeeze the seq dimension: [G, B, dim_z]
         z = z.squeeze(0)
+        # Average across groups to get single embedding per sample: [B, dim_z]
+        z = z.mean(dim=0)
 
         # Return same z for both modalities (AE has no separate image encoder)
         return {"svg": z, "img": z}
