@@ -145,7 +145,7 @@ class JepaConfig(_DefaultConfig):
         self.encode_stages = 2
 
         self.d_joint = 768
-        self.d_model = self.d_joint
+        # self.d_model = self.d_joint
 
         self.use_resnet = False
         self.predictor_type = "mlp"
