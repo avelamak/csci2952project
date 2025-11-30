@@ -229,33 +229,33 @@ class SimpleSVGAutoencoder(nn.Module):
         """
         Encode batch to joint embedding space (compatible with JEPA/Contrastive interface).
 
-        For autoencoder, we use the VAE latent z as the "svg" embedding.
+        For autoencoder, we use the VAE mu (mean) as the embedding for deterministic eval.
         Image embedding uses the same z (no separate image encoder).
 
         Returns:
             dict: {"svg": z, "img": z} where z is [B, dim_z]
         """
+        from vecssl.util import _make_seq_first
+
         device = next(self.parameters()).device
         commands = batch["commands"].to(device)
         args = batch["args"].to(device)
 
-        # Get latent z via encode_mode
-        z = self.model.forward(
-            commands_enc=commands,
-            args_enc=args,
-            commands_dec=None,
-            args_dec=None,
-            encode_mode=True,
-        )
+        # Replicate encoding path but use mu for deterministic eval (no VAE sampling noise)
+        commands_enc, args_enc = _make_seq_first(commands, args)
+        z = self.model.encoder(commands_enc, args_enc, label=None)
 
-        # z has shape [1, G, B, dim_z] from encoder (seq=1, groups=G, batch=B, dim_z)
-        # Squeeze the seq dimension: [G, B, dim_z]
-        z = z.squeeze(0)
-        # Average across groups to get single embedding per sample: [B, dim_z]
-        z = z.mean(dim=0)
+        if self.cfg.use_resnet:
+            z = self.model.resnet(z)
 
-        # Return same z for both modalities (AE has no separate image encoder)
-        return {"svg": z, "img": z}
+        # Use mu directly (not sampled z) for deterministic embedding
+        mu = self.model.vae.enc_mu_fcn(z)
+
+        # Shape: [1, 1, B, dim_z] → [B, dim_z]
+        mu = mu.squeeze(0).squeeze(0)
+
+        # Return same embedding for both modalities (AE has no separate image encoder)
+        return {"svg": mu, "img": mu}
 
     def check_gradients(self):
         """Check gradient flow through the model"""
