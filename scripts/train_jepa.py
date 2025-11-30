@@ -117,11 +117,14 @@ def main():
 
     # Wandb args
     parser.add_argument(
-        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
+        "--wandb-project",
+        type=str,
+        default="vecssl",
+        help="Wandb project name (enables wandb if set)",
     )
     parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
     parser.add_argument(
-        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
+        "--wandb-entity", type=str, default="vecssl", help="Wandb entity/team (optional)"
     )
 
     # Checkpoint args
@@ -158,6 +161,14 @@ def main():
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
+    n_params = sum(p.numel() for p in model.svg_encoder.parameters() if p.requires_grad)
+    logger.info(f"Total parameters svg encoder: [bold]{n_params:,}[/bold]", extra={"markup": True})
+    n_params = sum(p.numel() for p in model.predictor.parameters() if p.requires_grad)
+    logger.info(f"Total parameters predictor: [bold]{n_params:,}[/bold]", extra={"markup": True})
+    n_params = sum(p.numel() for p in model.image_encoder.parameters() if p.requires_grad)
+    logger.info(
+        f"Total parameters image encoder: [bold]{n_params:,}[/bold]", extra={"markup": True}
+    )
 
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -218,6 +229,7 @@ def main():
             "device": str(device),
             "amp": True,
             "n_params": n_params,
+            "model_name": "jepa",
         }
         logger.info(
             f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}

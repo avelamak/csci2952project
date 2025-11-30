@@ -54,9 +54,8 @@ class PredictorMLP(nn.Module):
 
         self.mlp = nn.Sequential(*layers)
 
-    def forward(self, x):  # x: [batch, seq_len, embed_dim]
-        x_pooled = x.mean(dim=1)  # [# Pool along sequence dimension (same as transformer version)
-        z_pred = self.mlp(x_pooled)
+    def forward(self, x):  # x: [batch, embed_dim]
+        z_pred = self.mlp(x)
         return z_pred
 
 
@@ -68,7 +67,7 @@ class Jepa(JointModel):
         self.svg_encoder = Encoder(cfg)
         if cfg.use_resnet:
             self.resnet = ResNet(cfg.d_model)
-        self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
+        # self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
 
         if cfg.predictor_type == "transformer":
             self.predictor = PredictorTransformer(
@@ -90,11 +89,11 @@ class Jepa(JointModel):
             self.image_encoder = DINOImageEncoder()
             for param in self.image_encoder.parameters():
                 param.requires_grad = False
-            self.image_projector = nn.Linear(
-                self.image_encoder.backbone.config.hidden_size, cfg.d_joint
-            )
-            for param in self.image_projector.parameters():
-                param.requires_grad = False
+            # self.image_projector = nn.Linear(
+            #     self.image_encoder.backbone.config.hidden_size, cfg.d_joint
+            # )
+            # for param in self.image_projector.parameters():
+            #     param.requires_grad = False
 
     def forward(self, batch):
         device = next(self.parameters()).device
@@ -107,14 +106,15 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        z_svg = self.svg_projector(z_svg)
-        z_svg = _make_batch_first(z_svg).squeeze()
+        # z_svg = self.svg_projector(z_svg)
+        z_svg = _make_batch_first(z_svg)
+        z_svg = z_svg.squeeze(2).mean(dim=1)
         z_svg = self.predictor(z_svg)
         z_svg = F.normalize(z_svg, dim=-1)
 
         with torch.no_grad():
             z_img = self.image_encoder(images)
-            z_img = self.image_projector(z_img)
+            # z_img = self.image_projector(z_img)
             z_img = F.normalize(z_img, dim=-1)
 
         loss = self.loss(z_svg, z_img)
@@ -137,13 +137,13 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        z_svg = self.svg_projector(z_svg)
+        # z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
-        z_svg = z_svg.mean(dim=1)
+        z_svg = z_svg.squeeze(2).mean(dim=1)
         z_svg = F.normalize(z_svg, dim=-1)
 
         z_img = self.image_encoder(images)
-        z_img = self.image_projector(z_img)
+        # z_img = self.image_projector(z_img)
         z_img = F.normalize(z_img, dim=-1)
 
         return {"svg": z_svg, "img": z_img}

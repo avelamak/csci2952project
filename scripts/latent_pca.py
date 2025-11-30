@@ -8,6 +8,7 @@ from vecssl.models.jepa import Jepa
 from vecssl.models.config import JepaConfig
 from torch.utils.data import DataLoader
 from vecssl.data.dataset import SVGXDataset
+from vecssl.util import setup_logging
 
 import logging
 
@@ -115,6 +116,8 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
+
+    setup_logging(level="INFO", log_file=None, rich_tracebacks=True, show_level=True)
 
     device = torch.device(args.device)
 
