@@ -224,6 +224,36 @@ class SimpleSVGAutoencoder(nn.Module):
 
         return TrainStep(loss=loss_dict["loss"], logs=logs, extras={"output": output})
 
+    @torch.no_grad()
+    def encode_joint(self, batch):
+        """
+        Encode batch to joint embedding space (compatible with JEPA/Contrastive interface).
+
+        For autoencoder, we use the VAE latent z as the "svg" embedding.
+        Image embedding uses the same z (no separate image encoder).
+
+        Returns:
+            dict: {"svg": z, "img": z} where z is [B, dim_z]
+        """
+        device = next(self.parameters()).device
+        commands = batch["commands"].to(device)
+        args = batch["args"].to(device)
+
+        # Get latent z via encode_mode
+        z = self.model.forward(
+            commands_enc=commands,
+            args_enc=args,
+            commands_dec=None,
+            args_dec=None,
+            encode_mode=True,
+        )
+
+        # z is [1, B, dim_z] from encoder, squeeze to [B, dim_z]
+        z = z.squeeze(0)
+
+        # Return same z for both modalities (AE has no separate image encoder)
+        return {"svg": z, "img": z}
+
     def check_gradients(self):
         """Check gradient flow through the model"""
         gradient_info = {}
