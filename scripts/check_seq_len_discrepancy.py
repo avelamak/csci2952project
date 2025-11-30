@@ -41,14 +41,17 @@ def check_svg(svg_path: Path, verbose: bool = False):
         SVGXDataset.preprocess(svg, augment=False)
         t_sep, fillings = svg.to_tensor(concat_groups=False), svg.to_fillings()
 
-    # After add_sos + add_eos (before padding)
+    # After add_sos + add_eos + pad (what dataset.py does)
+    MAX_SEQ_LEN = 40  # default from dataset
     actual_lens = []
+    cmds_shapes = []
     for t, f in zip(t_sep, fillings, strict=False):
         if len(t) == 0:
             continue
         st = SVGTensor.from_data(t, PAD_VAL=-1, filling=f)
-        st.add_eos().add_sos()
+        st.add_eos().add_sos().pad(seq_len=MAX_SEQ_LEN + 2)
         actual_lens.append(len(st.commands))
+        cmds_shapes.append(st.cmds().shape[0])  # flattened size
 
     max_len_actual = max(actual_lens) if actual_lens else 0
 
@@ -57,15 +60,21 @@ def check_svg(svg_path: Path, verbose: bool = False):
     expected_after_sos_eos = max_len_preprocess + 2
     discrepancy = max_len_actual - expected_after_sos_eos
 
-    if verbose or discrepancy != 0:
+    # Check if all cmds() have same flattened size (required for torch.stack)
+    cmds_mismatch = len(set(cmds_shapes)) > 1 if cmds_shapes else False
+
+    if verbose or discrepancy != 0 or cmds_mismatch:
         logger.info(f"{svg_path.name}:")
         logger.info(f"  Preprocess max_len_group: {max_len_preprocess}")
         logger.info(f"  Expected after SOS/EOS:   {max_len_preprocess + 2}")
         logger.info(f"  Actual tensor length:     {max_len_actual}")
         logger.info(f"  Group lengths (preprocess): {len_groups_preprocess}")
         logger.info(f"  Group lengths (actual):     {actual_lens}")
+        logger.info(f"  cmds() flattened sizes:     {cmds_shapes}")
         if discrepancy != 0:
             logger.warning(f"  DISCREPANCY: {discrepancy}")
+        if cmds_mismatch:
+            logger.warning(f"  CMDS MISMATCH: {cmds_shapes}")
 
     return {
         "file": svg_path.name,
@@ -73,6 +82,8 @@ def check_svg(svg_path: Path, verbose: bool = False):
         "expected": max_len_preprocess + 2,
         "actual": max_len_actual,
         "discrepancy": discrepancy,
+        "cmds_mismatch": cmds_mismatch,
+        "cmds_shapes": cmds_shapes,
     }
 
 
@@ -105,9 +116,11 @@ def main():
 
         # Summary
         discrepancies = [r for r in results if r["discrepancy"] != 0]
+        cmds_mismatches = [r for r in results if r["cmds_mismatch"]]
         logger.info("=" * 50)
         logger.info(f"Total checked: {len(results)}")
         logger.info(f"Discrepancies: {len(discrepancies)}")
+        logger.info(f"Cmds mismatches: {len(cmds_mismatches)}")
 
         if discrepancies:
             logger.warning("Files with discrepancies:")
@@ -115,6 +128,11 @@ def main():
                 logger.warning(
                     f"  {d['file']}: expected {d['expected']}, got {d['actual']} (diff: {d['discrepancy']})"
                 )
+
+        if cmds_mismatches:
+            logger.warning("Files with cmds() size mismatch between groups:")
+            for d in cmds_mismatches:
+                logger.warning(f"  {d['file']}: {d['cmds_shapes']}")
 
 
 if __name__ == "__main__":
