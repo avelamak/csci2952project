@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.config import ContrastiveConfig, JepaConfig
+from vecssl.models.config import ContrastiveConfig, JepaConfig, _DefaultConfig
 from vecssl.models.contrastive import ContrastiveModel
 from vecssl.models.jepa import Jepa
 
@@ -87,8 +87,29 @@ def load_encoder(
             cfg = ContrastiveConfig()
         model = ContrastiveModel(cfg)
 
+    elif encoder_type == "autoencoder":
+        from test_svg_autoencoder import SimpleSVGAutoencoder
+
+        if isinstance(cfg_obj, _DefaultConfig):
+            cfg = cfg_obj
+        elif isinstance(cfg_obj, dict):
+            cfg = _DefaultConfig()
+            for k, v in cfg_obj.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+        else:
+            logger.warning("No config in checkpoint, using default _DefaultConfig")
+            cfg = _DefaultConfig()
+            cfg.encode_stages = 2
+            cfg.decode_stages = 2
+            cfg.use_vae = True
+
+        model = SimpleSVGAutoencoder(cfg)
+
     else:
-        raise ValueError(f"Unknown encoder_type: {encoder_type}. Must be 'jepa' or 'contrastive'")
+        raise ValueError(
+            f"Unknown encoder_type: {encoder_type}. Must be 'jepa', 'contrastive', or 'autoencoder'"
+        )
 
     model.load_state_dict(ckpt["model"])
     model.to(device)

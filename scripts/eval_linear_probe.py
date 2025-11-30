@@ -2,7 +2,7 @@
 Linear Probe Evaluation Script
 
 Train a linear classifier on frozen encoder latents to evaluate representation quality.
-Supports JEPA and Contrastive encoders.
+Supports JEPA, Contrastive, and Autoencoder encoders.
 
 Usage:
     python scripts/eval_linear_probe.py \
@@ -10,6 +10,12 @@ Usage:
         --checkpoint checkpoints/jepa/best_model.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv \
         --epochs 10 --lr 1e-3
+
+    # Or with autoencoder:
+    python scripts/eval_linear_probe.py \
+        --encoder-type autoencoder \
+        --checkpoint checkpoints/ae/checkpoint.pt \
+        --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv
 """
 
 import argparse
@@ -117,7 +123,7 @@ def main():
         "--encoder-type",
         type=str,
         required=True,
-        choices=["jepa", "contrastive"],
+        choices=["jepa", "contrastive", "autoencoder"],
         help="Type of encoder",
     )
     parser.add_argument(
@@ -153,8 +159,10 @@ def main():
     # Determine embedding dimension
     if args.encoder_type == "jepa":
         embed_dim = cfg.d_joint
-    else:  # contrastive
+    elif args.encoder_type == "contrastive":
         embed_dim = cfg.joint_dim
+    else:  # autoencoder
+        embed_dim = cfg.dim_z
 
     # Create dataloader
     train_loader = create_eval_dataloader(
