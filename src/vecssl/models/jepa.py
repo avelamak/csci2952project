@@ -108,7 +108,7 @@ class Jepa(JointModel):
             z_svg = self.resnet(z_svg)
         # z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg)
-        z_svg = z_svg.squeeze(2).mean(dim=1)
+        z_svg = z_svg.squeeze()
         z_svg = self.predictor(z_svg)
         z_svg = F.normalize(z_svg, dim=-1)
 
@@ -139,7 +139,7 @@ class Jepa(JointModel):
             z_svg = self.resnet(z_svg)
         # z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
-        z_svg = z_svg.squeeze(2).mean(dim=1)
+        z_svg = z_svg.squeeze()
         z_svg = F.normalize(z_svg, dim=-1)
 
         z_img = self.image_encoder(images)

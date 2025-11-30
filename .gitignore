@@ -5,6 +5,7 @@ svgx_meta.csv
 runs/
 wandb/
 datasets/
+google_fonts/
 
 # PCA files
 pca_img.png
