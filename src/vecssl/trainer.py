@@ -77,10 +77,15 @@ class Trainer:
         save_every=1,
         start_epoch=0,
     ):
-        # Prepare model, optimizer, train_loader (val_loader stays unprepared for rank-0 only eval)
-        self.model, self.optimizer, train_loader = self.accelerator.prepare(
-            self._model, self._optimizer, train_loader
-        )
+        # Prepare model, optimizer, and dataloaders (including val_loader if present)
+        if val_loader is not None:
+            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader, val_loader
+            )
+        else:
+            self.model, self.optimizer, train_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader
+            )
 
         if self._scheduler is not None:
             self.scheduler = self.accelerator.prepare(self._scheduler)
@@ -155,11 +160,12 @@ class Trainer:
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
                     self._save_checkpoint(ep)
 
-                # Validation (only rank 0 runs, others wait)
-                if val_loader:
+                # Validation: all ranks participate, validate handles gathering
+                if val_loader is not None:
+                    val_loss = self.validate(val_loader, ep)
                     if self.accelerator.is_main_process:
-                        self.validate(val_loader, ep)
-                    self.accelerator.wait_for_everyone()
+                        logger.info(f"epoch {ep + 1}: val_loss={val_loss:.6f}")
+                self.accelerator.wait_for_everyone()
 
         # End training (cleanup trackers)
         self.accelerator.wait_for_everyone()
@@ -167,10 +173,10 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self, val_loader, ep):
-        """Run validation only on the current process (call from rank 0 only).
+        """Multi-process-safe validation.
 
-        No collectives are used - this avoids NCCL desync issues in multi-GPU training.
-        Evaluates on rank 0's shard of the validation set only.
+        All ranks iterate over their prepared shard of the validation loader.
+        Metrics are gathered with accelerator.gather_for_metrics.
         """
         self.model.eval()
         losses = []
@@ -178,14 +184,18 @@ class Trainer:
         for batch in val_loader:
             with self.accelerator.autocast():
                 step = self.model(batch)
-            loss = step.loss.detach()
+            loss = step.loss
             if loss.ndim > 0:
                 loss = loss.mean()
-            losses.append(loss.item())
+            losses.append(loss.detach())  # Keep as tensor
 
-        val_loss = sum(losses) / len(losses) if losses else float("nan")
+        if not losses:
+            val_loss = float("nan")
+        else:
+            losses_tensor = torch.stack(losses)
+            all_losses = self.accelerator.gather_for_metrics(losses_tensor)
+            val_loss = all_losses.mean().item()
 
-        # Logging (this should only be called from main process anyway)
         if self.accelerator.is_main_process:
             self.accelerator.log({"val/loss": val_loss, "epoch": ep})
 
@@ -194,6 +204,8 @@ class Trainer:
                 self.best_val_loss = val_loss
                 logger.info(f"New best validation loss: {val_loss:.6f} - saving best model")
                 self._save_checkpoint(ep, is_best=True, val_loss=val_loss)
+
+        return val_loss
 
     def _save_checkpoint(self, ep, is_best=False, val_loss=None):
         """Save checkpoint on the main process only (no collectives)."""

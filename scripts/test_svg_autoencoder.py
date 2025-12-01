@@ -432,10 +432,15 @@ class DebugTrainer(Trainer):
     ):
         from vecssl.util import make_progress
 
-        # Prepare model, optimizer, train_loader (val_loader stays unprepared for rank-0 only eval)
-        self.model, self.optimizer, train_loader = self.accelerator.prepare(
-            self._model, self._optimizer, train_loader
-        )
+        # Prepare model, optimizer, and dataloaders (including val_loader if present)
+        if val_loader is not None:
+            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader, val_loader
+            )
+        else:
+            self.model, self.optimizer, train_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader
+            )
 
         if self._scheduler is not None:
             self.scheduler = self.accelerator.prepare(self._scheduler)
@@ -516,11 +521,10 @@ class DebugTrainer(Trainer):
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
                     self._save_checkpoint(ep)
 
-                # Validation (only rank 0 runs, others wait)
-                if val_loader and ep % 5 == 0 and ep > 1:
-                    if self.accelerator.is_main_process:
-                        self.validate(val_loader, ep)
-                    self.accelerator.wait_for_everyone()
+                # Validation: all ranks participate, validate handles gathering
+                if val_loader is not None and ep % 5 == 0 and ep > 1:
+                    self.validate(val_loader, ep)
+                self.accelerator.wait_for_everyone()
 
         # End training (cleanup trackers)
         self.accelerator.wait_for_everyone()
