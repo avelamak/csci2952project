@@ -171,16 +171,29 @@ class Trainer:
     @torch.no_grad()
     def validate(self, val_loader, ep):
         self.model.eval()
-        losses = []
+
+        # Local accumulators on each rank (avoids per-batch gather which can desync ranks)
+        total_loss = torch.tensor(0.0, device=self.device)
+        total_count = torch.tensor(0, device=self.device, dtype=torch.long)
 
         for batch in val_loader:
             with self.accelerator.autocast():
                 step = self.model(batch)
-            # Gather losses from all processes
-            gathered_loss = self.accelerator.gather(step.loss)
-            losses.append(float(gathered_loss.mean()))
+            loss = step.loss.detach()
+            # Ensure scalar (in case loss is per-example)
+            if loss.ndim > 0:
+                loss = loss.mean()
+            total_loss += loss
+            total_count += 1
 
-        val_loss = sum(losses) / max(1, len(losses))
+        # Single gather call - all ranks call exactly once (even if total_count == 0)
+        gathered_loss = self.accelerator.gather(total_loss)
+        gathered_count = self.accelerator.gather(total_count)
+
+        # Compute global mean loss
+        global_loss_sum = gathered_loss.sum()
+        global_count = gathered_count.sum().clamp_min(1)
+        val_loss = (global_loss_sum / global_count).item()
 
         # Logging (main process only)
         if self.accelerator.is_main_process:
