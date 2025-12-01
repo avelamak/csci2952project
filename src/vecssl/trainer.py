@@ -201,28 +201,28 @@ class Trainer:
                 self._save_checkpoint(ep, is_best=True, val_loss=val_loss)
 
     def _save_checkpoint(self, ep, is_best=False, val_loss=None):
-        """Save checkpoint using accelerator's unwrap_model for compatibility"""
-        self.accelerator.wait_for_everyone()
+        """Save checkpoint on the main process only (no collectives)."""
+        if not self.accelerator.is_main_process:
+            return  # Only rank 0 saves - no barriers here to avoid NCCL desync
 
-        if self.accelerator.is_main_process:
-            unwrapped_model = self.accelerator.unwrap_model(self.model)
-            _state = {
-                "model": unwrapped_model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
-                "cfg": self.cfg,
-                "epoch": ep,
-            }
-            if val_loss is not None:
-                _state["val_loss"] = val_loss
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        _state = {
+            "model": unwrapped_model.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
+            "cfg": self.cfg,
+            "epoch": ep,
+        }
+        if val_loss is not None:
+            _state["val_loss"] = val_loss
 
-            if not self.checkpoint_dir.exists():
-                self.checkpoint_dir.mkdir(parents=True)
+        if not self.checkpoint_dir.exists():
+            self.checkpoint_dir.mkdir(parents=True)
 
-            if is_best:
-                torch.save(_state, self.checkpoint_dir / "best_model.pt")
-            else:
-                torch.save(_state, self.checkpoint_dir / f"checkpoint_{ep:04d}.pt")
+        if is_best:
+            torch.save(_state, self.checkpoint_dir / "best_model.pt")
+        else:
+            torch.save(_state, self.checkpoint_dir / f"checkpoint_{ep:04d}.pt")
 
 
 def save_chkpt(model, optimizer, scheduler, cfg, checkpoint_dir: Path, ep: int, accelerator=None):
