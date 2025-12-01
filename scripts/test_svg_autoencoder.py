@@ -22,7 +22,7 @@ from vecssl.models.base import TrainStep
 from vecssl.models.config import _DefaultConfig
 from vecssl.models.loss import SVGLoss
 from vecssl.trainer import Trainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
 
 from vecssl.models.model import SVGTransformer
 
@@ -541,18 +541,20 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=1,
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
-    # Validation dataset (20% of data)
+    # Validation dataset (10% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=1,
+        split="val",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
@@ -603,6 +605,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=1, help="Log every N steps")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument(
         "--mixed-precision",
         type=str,
@@ -644,6 +647,9 @@ def main():
 
     args = parser.parse_args()
 
+    # Set random seed for reproducibility
+    set_seed(args.seed)
+
     # Setup logging with Rich formatting
     setup_logging(
         level=args.log_level,
@@ -653,6 +659,7 @@ def main():
     )
 
     logger.info("=" * 60)
+    logger.info(f"Random seed: {args.seed}")
     logger.info("[bold cyan]SVG Autoencoder Test[/bold cyan]", extra={"markup": True})
     logger.info("=" * 60)
 

@@ -31,7 +31,11 @@ class SVGXDataset(Dataset):
         max_num_groups: int = 8,
         max_seq_len: int = 40,
         pad_val: int = -1,
-        train_ratio: float = 1.0,
+        split: str = "train",  # "train", "val", or "test"
+        train_ratio: float = 0.8,
+        val_ratio: float = 0.1,
+        test_ratio: float = 0.1,
+        seed: int = 42,
         already_preprocessed: bool = True,
         already_tensor: bool = True,
         cache: bool = False,
@@ -54,8 +58,21 @@ class SVGXDataset(Dataset):
         # Filter by constraints (like DeepSVG)
         df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len)]
 
-        # Apply train ratio for splitting if needed
-        df = df.sample(frac=train_ratio) if train_ratio < 1.0 else df
+        # Shuffle with seed for reproducible splits
+        df_shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        n = len(df_shuffled)
+        train_end = int(n * train_ratio)
+        val_end = train_end + int(n * val_ratio)
+
+        # Select split
+        if split == "train":
+            df = df_shuffled.iloc[:train_end]
+        elif split == "val":
+            df = df_shuffled.iloc[train_end:val_end]
+        elif split == "test":
+            df = df_shuffled.iloc[val_end:]
+        else:
+            raise ValueError(f"Invalid split: {split}. Must be 'train', 'val', or 'test'")
 
         # Reset index to ensure contiguous 0-N indexing
         self.df = df.reset_index(drop=True)

@@ -2,8 +2,12 @@
 
 import logging
 import os
+import random
 from logging import FileHandler
 from typing import Optional
+
+import numpy as np
+import torch
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.progress import (
@@ -19,6 +23,17 @@ from rich.progress import (
 # We set a global Console variable so we
 # never double format
 _CONSOLE: Optional[Console] = None
+
+
+def set_seed(seed: int = 42):
+    """Set all random seeds for reproducibility"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def setup_logging(
