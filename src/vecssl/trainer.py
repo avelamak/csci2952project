@@ -158,7 +158,8 @@ class Trainer:
 
                 # Checkpointing
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
-                    self._save_checkpoint(ep)
+                    pass
+                    # self._save_checkpoint(ep)
 
                 # Validation: all ranks participate, validate handles gathering
                 if val_loader is not None:
@@ -203,7 +204,7 @@ class Trainer:
             if self.checkpoint_dir and val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 logger.info(f"New best validation loss: {val_loss:.6f} - saving best model")
-                self._save_checkpoint(ep, is_best=True, val_loss=val_loss)
+                # self._save_checkpoint(ep, is_best=True, val_loss=val_loss)
 
         return val_loss
 

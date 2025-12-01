@@ -521,8 +521,8 @@ class DebugTrainer(Trainer):
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
                     self._save_checkpoint(ep)
 
-                # Validation: all ranks participate, validate handles gathering
-                if val_loader is not None and ep % 5 == 0 and ep > 1:
+                # Validation:all ranks participate, validate handles gathering
+                if val_loader and ep % 10 == 0 and ep > 1:
                     self.validate(val_loader, ep)
                 self.accelerator.wait_for_everyone()
 
