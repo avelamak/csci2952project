@@ -156,3 +156,11 @@ class JepaConfig(_DefaultConfig):
         self.predictor_mlp_num_layers = 2
         self.predictor_mlp_hidden_dim = 768
         self.predictor_mlp_dropout = 0.1
+
+
+class MAEConfig(_DefaultConfig):
+    def __init__(self):
+        super().__init__()
+        self.patch_ratio = 0.98
+
+        self.decoder_embed_dim = 768

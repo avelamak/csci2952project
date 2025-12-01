@@ -119,6 +119,163 @@ class LabelEmbedding(nn.Module):
         return src
 
 
+class MAEEncoder(nn.Module):
+    def __init__(self, cfg: _DefaultConfig):
+        super().__init__()
+
+        self.cfg = cfg
+
+        seq_len = cfg.max_seq_len if cfg.encode_stages == 2 else cfg.max_total_len
+        self.use_group = cfg.encode_stages == 1
+        self.embedding = SVGEmbedding(cfg, seq_len, use_group=self.use_group)
+
+        if cfg.label_condition:
+            self.label_embedding = LabelEmbedding(cfg)
+        dim_label = cfg.dim_label if cfg.label_condition else None
+
+        if cfg.model_type == "transformer":
+            encoder_layer = TransformerEncoderLayerImproved(
+                cfg.d_model, cfg.n_heads, cfg.dim_feedforward, cfg.dropout, d_global2=dim_label
+            )
+            encoder_norm = LayerNorm(cfg.d_model)
+            self.encoder = TransformerEncoder(encoder_layer, cfg.n_layers, encoder_norm)
+        else:  # "lstm"
+            self.encoder = nn.LSTM(
+                cfg.d_model, cfg.d_model // 2, dropout=cfg.dropout, bidirectional=True
+            )
+
+        if cfg.encode_stages == 2:
+            if not cfg.self_match:
+                self.hierarchical_PE = PositionalEncodingLUT(
+                    cfg.d_model, max_len=cfg.max_num_groups
+                )
+
+            hierarchical_encoder_layer = TransformerEncoderLayerImproved(
+                cfg.d_model, cfg.n_heads, cfg.dim_feedforward, cfg.dropout, d_global2=dim_label
+            )
+            hierarchical_encoder_norm = LayerNorm(cfg.d_model)
+            self.hierarchical_encoder = TransformerEncoder(
+                hierarchical_encoder_layer, cfg.n_layers, hierarchical_encoder_norm
+            )
+
+    def mask_groups(self, commands, args, mask_ratio=0.3):
+        """
+        commands: [S, G, N]
+        args:     [S, G, N, A]
+        mask_ratio: float in [0,1], fraction of groups to mask per batch-item.
+
+        Returns:
+            commands_masked, args_masked, masked_indices
+        """
+
+        S, G, N = commands.shape
+        # A = args.size(-1)
+
+        # output copies
+        commands_masked = commands.clone()
+        args_masked = args.clone()
+
+        # list of masked group indices (same across batch for simplicity)
+        num_mask = max(1, int(G * mask_ratio))
+        masked_indices = torch.randperm(G)[:num_mask]
+
+        # Apply masking
+        # For each masked group g:
+        #   commands[:, g, :] = EOS
+        #   args[:, g, :, :] = -1
+        EOS = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+
+        for g in masked_indices:
+            commands_masked[:, g, :] = EOS
+            args_masked[:, g, :, :] = -1
+
+        return commands_masked, args_masked, masked_indices
+
+    def forward(self, commands, args, logger=None, label=None):
+        S, G, N = commands.shape
+        l = None
+        commands, args, mask_group_indices = self.mask_groups(commands, args)
+
+        logger.info(
+            f"[bold green]This is command shape before anything {commands.shape} and this is args before anything {args.shape}[/bold green]",
+            extra={"markup": True},
+        )
+        # basically compresses G, and N dimension into a single G * N dim
+        # we now have G*N, S commands and G*N, S, Args arguments
+        # ignore l for now
+        # if self.cfg.encode_stages == 2:
+        #     visibility_mask, key_visibility_mask = (
+        #         _get_visibility_mask(commands, seq_dim=0),
+        #         _get_key_visibility_mask(commands, seq_dim=0),
+        #     )
+
+        commands, args, l = _pack_group_batch(commands, args, l)
+
+        logger.info(
+            f"[bold green]This is command shape after _pack_group_batch  {commands.shape} and this is args after pack_group_batch {args.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # so we have 42 * 32 tokens in total
+        # GN = G * N
+
+        # mask_positions = self.create_masks(commands)
+
+        # logger.info(
+        #     f"[bold green]This is mask shape {mask_positions.shape}[/bold green]",
+        #     extra={"markup": True},
+        # )
+
+        # Essentially masks out the pad tokens in the commands tensor
+        # padding_mask tells which embeddings to ignore when pooling the results of the transformer
+        # key padding mask tells the transformer which embeddings to ignore during self attention
+        # getting these masks from the commands is enough as it will effectively zero out the token (which was args + commands)
+        padding_mask, key_padding_mask = (
+            _get_padding_mask(commands, seq_dim=0),
+            _get_key_padding_mask(commands, seq_dim=0),
+        )
+
+        # this is relevant for generating group embeddings to add the context of which group a token belongs to
+        # only used for group embedding,
+        group_mask = _get_group_mask(commands, seq_dim=0) if self.use_group else None
+
+        # commands_flat = commands_enc.reshape(S, GN)            # [S, GN]
+        # args_flat = args_enc.reshape(S, GN, -1)                # [S, GN, n_args]
+        # groups_flat = group_index_tensor.reshape(S, GN)        # you can generate group indices 0..G-1 and broadcast per-batch
+
+        # These are all the embeddings, we need to mask some of these
+        src = self.embedding(commands, args, group_mask)
+
+        logger.info(
+            f"[bold green]This is embedding shape before encoding {src.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # only attends to unmasked tokens
+        memory = self.encoder(src, mask=None, src_key_padding_mask=key_padding_mask, memory2=l)
+
+        z = (memory * padding_mask).sum(dim=0, keepdim=True) / padding_mask.sum(dim=0, keepdim=True)
+
+        logger.info(
+            f"[bold green]This is embedding shape after encoding stage 1 {z.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        # gets the batches back out, maybe it's better to process all the batches at once in a transformer?
+        # but now we have our z per batches, YAY!
+        # so now there are 4 svg latent dim vectors that encode 4 (batch size) svgs (aka 4 * S * G tokens) in the latent space
+        # awesome
+        # actually we have an embedding per group technically
+        z = _unpack_group_batch(N, z)
+
+        logger.info(
+            f"[bold green]This is embedding shape after unpacking stage 1 {z.shape}[/bold green]",
+            extra={"markup": True},
+        )
+
+        return z, mask_group_indices
+
+
 class Encoder(nn.Module):
     def __init__(self, cfg: _DefaultConfig):
         super().__init__()
@@ -258,6 +415,127 @@ class Bottleneck(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, cfg: _DefaultConfig):
         super(Decoder, self).__init__()
+
+        self.cfg = cfg
+
+        if cfg.label_condition:
+            self.label_embedding = LabelEmbedding(cfg)
+        dim_label = cfg.dim_label if cfg.label_condition else None
+
+        if cfg.decode_stages == 2:
+            self.hierarchical_embedding = ConstEmbedding(cfg, cfg.num_groups_proposal)
+
+            hierarchical_decoder_layer = TransformerDecoderLayerGlobalImproved(
+                cfg.d_model,
+                cfg.dim_z,
+                cfg.n_heads,
+                cfg.dim_feedforward,
+                cfg.dropout,
+                d_global2=dim_label,
+            )
+            hierarchical_decoder_norm = LayerNorm(cfg.d_model)
+            self.hierarchical_decoder = TransformerDecoder(
+                hierarchical_decoder_layer, cfg.n_layers_decode, hierarchical_decoder_norm
+            )
+            self.hierarchical_fcn = HierarchFCN(cfg.d_model, cfg.dim_z)
+
+        if cfg.pred_mode == "autoregressive":
+            self.embedding = SVGEmbedding(
+                cfg,
+                cfg.max_total_len,
+                rel_args=cfg.rel_targets,
+                use_group=True,
+                group_len=cfg.max_total_len,
+            )
+
+            square_subsequent_mask = _generate_square_subsequent_mask(self.cfg.max_total_len + 1)
+            self.register_buffer("square_subsequent_mask", square_subsequent_mask)
+        else:  # "one_shot"
+            seq_len = cfg.max_seq_len + 1 if cfg.decode_stages == 2 else cfg.max_total_len + 1
+            self.embedding = ConstEmbedding(cfg, seq_len)
+
+        if cfg.model_type == "transformer":
+            decoder_layer = TransformerDecoderLayerGlobalImproved(
+                cfg.d_model,
+                cfg.dim_z,
+                cfg.n_heads,
+                cfg.dim_feedforward,
+                cfg.dropout,
+                d_global2=dim_label,
+            )
+            decoder_norm = LayerNorm(cfg.d_model)
+            self.decoder = TransformerDecoder(decoder_layer, cfg.n_layers_decode, decoder_norm)
+        else:  # "lstm"
+            self.fc_hc = nn.Linear(cfg.dim_z, 2 * cfg.d_model)
+            self.decoder = nn.LSTM(cfg.d_model, cfg.d_model, dropout=cfg.dropout)
+
+        args_dim = 2 * cfg.args_dim if cfg.rel_targets else cfg.args_dim + 1
+        self.fcn = FCN(cfg.d_model, cfg.n_commands, cfg.n_args, args_dim)
+
+    def _get_initial_state(self, z):
+        hidden, cell = torch.split(torch.tanh(self.fc_hc(z)), self.cfg.d_model, dim=2)
+        hidden_cell = hidden.contiguous(), cell.contiguous()
+        return hidden_cell
+
+    def forward(self, z, commands, args, label=None, hierarch_logits=None, return_hierarch=False):
+        N = z.size(2)
+        l = self.label_embedding(label).unsqueeze(0) if self.cfg.label_condition else None
+        if hierarch_logits is None:
+            z = _pack_group_batch(z)
+
+        if self.cfg.decode_stages == 2:
+            if hierarch_logits is None:
+                src = self.hierarchical_embedding(z)
+                out = self.hierarchical_decoder(
+                    src, z, tgt_mask=None, tgt_key_padding_mask=None, memory2=l
+                )
+                hierarch_logits, z = self.hierarchical_fcn(out)
+
+            if self.cfg.label_condition:
+                l = l.unsqueeze(0).repeat(1, z.size(1), 1, 1)
+
+            hierarch_logits, z, l = _pack_group_batch(hierarch_logits, z, l)
+
+            if return_hierarch:
+                return _unpack_group_batch(N, hierarch_logits, z)
+
+        if self.cfg.pred_mode == "autoregressive":
+            S = commands.size(0)
+            commands, args = _pack_group_batch(commands, args)
+
+            group_mask = _get_group_mask(commands, seq_dim=0)
+
+            src = self.embedding(commands, args, group_mask)
+
+            if self.cfg.model_type == "transformer":
+                key_padding_mask = _get_key_padding_mask(commands, seq_dim=0)
+                out = self.decoder(
+                    src,
+                    z,
+                    tgt_mask=self.square_subsequent_mask[:S, :S],
+                    tgt_key_padding_mask=key_padding_mask,
+                    memory2=l,
+                )
+            else:  # "lstm"
+                hidden_cell = self._get_initial_state(z)  # TODO: reinject intermediate state
+                out, _ = self.decoder(src, hidden_cell)
+
+        else:  # "one_shot"
+            src = self.embedding(z)
+            out = self.decoder(src, z, tgt_mask=None, tgt_key_padding_mask=None, memory2=l)
+
+        command_logits, args_logits = self.fcn(out)
+
+        out_logits = (command_logits, args_logits) + (
+            (hierarch_logits,) if self.cfg.decode_stages == 2 else ()
+        )
+
+        return _unpack_group_batch(N, *out_logits)
+
+
+class MAEDecoder(nn.Module):
+    def __init__(self, cfg: _DefaultConfig):
+        super(MAEDecoder, self).__init__()
 
         self.cfg = cfg
 
