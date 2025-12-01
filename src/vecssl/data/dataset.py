@@ -52,7 +52,8 @@ class SVGXDataset(Dataset):
         df = pd.read_csv(meta_filepath)
 
         # Filter by constraints (like DeepSVG)
-        df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len)]
+        # df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len)]
+        df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len - 20)]
 
         # Apply train ratio for splitting if needed
         df = df.sample(frac=train_ratio) if train_ratio < 1.0 else df
