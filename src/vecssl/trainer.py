@@ -96,8 +96,6 @@ class Trainer:
             init_kwargs = {}
             if self.wandb_project:
                 init_kwargs["wandb"] = {"name": self.wandb_project}
-            if self.tb_dir:
-                init_kwargs["tensorboard"] = {"logging_dir": self.tb_dir}
 
             self.accelerator.init_trackers(
                 project_name=self.wandb_project or "training",
