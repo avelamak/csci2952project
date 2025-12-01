@@ -16,7 +16,7 @@ from vecssl.util import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def check_svg(svg_path: Path, verbose: bool = False):
+def check_svg(svg_path: Path):
     """Compare preprocessing length vs actual tensor length."""
 
     # Check if it's a .pt file (already preprocessed tensor)
@@ -70,14 +70,14 @@ def check_svg(svg_path: Path, verbose: bool = False):
     # Check if all cmds() have same flattened size (required for torch.stack)
     cmds_mismatch = len(set(cmds_shapes)) > 1 if cmds_shapes else False
 
-    if verbose or discrepancy != 0 or cmds_mismatch:
-        logger.info(f"{svg_path.name}:")
-        logger.info(f"  Preprocess max_len_group: {max_len_preprocess}")
-        logger.info(f"  Expected after SOS/EOS:   {max_len_preprocess + 2}")
-        logger.info(f"  Actual tensor length:     {max_len_actual}")
-        logger.info(f"  Group lengths (preprocess): {len_groups_preprocess}")
-        logger.info(f"  Group lengths (actual):     {actual_lens}")
-        logger.info(f"  cmds() flattened sizes:     {cmds_shapes}")
+    if discrepancy != 0 or cmds_mismatch:
+        logger.warning(f"{svg_path.name}:")
+        logger.warning(f"  Preprocess max_len_group: {max_len_preprocess}")
+        logger.warning(f"  Expected after SOS/EOS:   {max_len_preprocess + 2}")
+        logger.warning(f"  Actual tensor length:     {max_len_actual}")
+        logger.warning(f"  Group lengths (preprocess): {len_groups_preprocess}")
+        logger.warning(f"  Group lengths (actual):     {actual_lens}")
+        logger.warning(f"  cmds() flattened sizes:     {cmds_shapes}")
         if discrepancy != 0:
             logger.warning(f"  DISCREPANCY: {discrepancy}")
         if cmds_mismatch:
@@ -100,13 +100,12 @@ def main():
     parser.add_argument("--svg-dir", type=Path, help="Directory of SVGs to check")
     parser.add_argument("--meta", type=Path, help="Metadata CSV to cross-reference")
     parser.add_argument("--max-samples", type=int, default=100)
-    parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
     setup_logging(level="INFO", reset=True)
 
     if args.svg:
-        check_svg(args.svg, verbose=True)
+        check_svg(args.svg)
     elif args.svg_dir:
         # Find both .svg and .pt files
         svg_files = list(args.svg_dir.glob("*.svg")) + list(args.svg_dir.glob("*.pt"))
@@ -116,7 +115,7 @@ def main():
         results = []
         for svg_path in svg_files:
             try:
-                result = check_svg(svg_path, verbose=args.verbose)
+                result = check_svg(svg_path)
                 results.append(result)
             except Exception as e:
                 logger.error(f"Error processing {svg_path}: {e}")
