@@ -432,15 +432,10 @@ class DebugTrainer(Trainer):
     ):
         from vecssl.util import make_progress
 
-        # Prepare model, optimizer, scheduler, and dataloaders
-        if val_loader is not None:
-            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
-                self._model, self._optimizer, train_loader, val_loader
-            )
-        else:
-            self.model, self.optimizer, train_loader = self.accelerator.prepare(
-                self._model, self._optimizer, train_loader
-            )
+        # Prepare model, optimizer, train_loader (val_loader stays unprepared for rank-0 only eval)
+        self.model, self.optimizer, train_loader = self.accelerator.prepare(
+            self._model, self._optimizer, train_loader
+        )
 
         if self._scheduler is not None:
             self.scheduler = self.accelerator.prepare(self._scheduler)
