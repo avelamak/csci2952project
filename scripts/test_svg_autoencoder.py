@@ -295,16 +295,16 @@ class SimpleSVGAutoencoder(nn.Module):
 
 
 class DebugTrainer(Trainer):
-    """Extended trainer with gradient checking"""
+    """Extended trainer with gradient checking and visualization"""
 
-    def __init__(self, *args, check_gradients=False, wandb_project=None, cfg=None, **kwargs):
-        super().__init__(*args, wandb_project=wandb_project, cfg=cfg, **kwargs)
+    def __init__(self, *args, check_gradients=False, **kwargs):
+        super().__init__(*args, **kwargs)
         self.check_gradients = check_gradients
         self.first_step_done = False
 
     def _maybe_visualize_batch(self, batch, step, ep, i, out_dir="debug_svgs"):
         """Save GT and predicted SVGs for visualization."""
-        if i != 0:
+        if i != 0 or not self.accelerator.is_main_process:
             return
 
         logger.info(f"[viz] Attempting visualization for epoch {ep}")
@@ -338,16 +338,16 @@ class DebugTrainer(Trainer):
             logger.warning(f"[viz] Failed to save GT SVG: {e}")
 
         # ---------------- Predicted SVG (via greedy_sample) ----------------
-        device = self.device
-        model = self.model  # SimpleSVGAutoencoder wrapper
+        # Get the unwrapped model for greedy_sample
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
 
-        # Take the same sample as input to the encoder
-        enc_commands = batch["commands"][b : b + 1].to(device)  # [1, G, S]
-        enc_args = batch["args"][b : b + 1].to(device)  # [1, G, S, n_args]
+        # batch tensors are already on the correct device via accelerator
+        enc_commands = batch["commands"][b : b + 1]  # [1, G, S]
+        enc_args = batch["args"][b : b + 1]  # [1, G, S, n_args]
 
         with torch.no_grad():
             # Use the SVGTransformer's own sampling logic
-            commands_y, args_y = model.model.greedy_sample(
+            commands_y, args_y = unwrapped_model.model.greedy_sample(
                 commands_enc=enc_commands,
                 args_enc=enc_args,
                 commands_dec=None,
@@ -378,6 +378,48 @@ class DebugTrainer(Trainer):
         except Exception as e:
             logger.warning(f"[viz] Failed to save pred SVG: {e}")
 
+    def _check_gradients_once(self):
+        """Check gradient flow through the model (only on first step)"""
+        if not self.check_gradients or self.first_step_done:
+            return
+
+        if not self.accelerator.is_main_process:
+            self.first_step_done = True
+            return
+
+        # Get unwrapped model for gradient checking
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+
+        logger.info(
+            "[bold yellow]Debug: Gradient flow check[/bold yellow]",
+            extra={"markup": True},
+        )
+        grad_info, grad_summary = unwrapped_model.check_gradients()
+
+        logger.info(
+            f"  Total params: [bold]{grad_summary['total_params']}[/bold]",
+            extra={"markup": True},
+        )
+        logger.info(
+            f"  Params with grad: [bold]{grad_summary['params_with_grad']}[/bold] "
+            f"({grad_summary['gradient_flow_percentage']:.1f}%)",
+            extra={"markup": True},
+        )
+        logger.info(f"  Max grad norm: {grad_summary['max_grad_norm']:.6f}")
+        logger.info(f"  Min grad norm: {grad_summary['min_grad_norm']:.6f}")
+
+        # Show first few and last few layers
+        logger.info("  Sample gradient norms:")
+        for name, info in list(grad_info.items())[:5]:
+            if info["has_grad"]:
+                logger.info(f"    {name}: {info['grad_norm']:.6f}")
+        logger.info("    ...")
+        for name, info in list(grad_info.items())[-5:]:
+            if info["has_grad"]:
+                logger.info(f"    {name}: {info['grad_norm']:.6f}")
+
+        self.first_step_done = True
+
     def run(
         self,
         train_loader,
@@ -387,11 +429,35 @@ class DebugTrainer(Trainer):
         save_every=1,
         start_epoch=0,
     ):
-        device = self.device
-        self.model.to(device)
-        scaler = torch.amp.grad_scaler.GradScaler(enabled=self.amp)
-
         from vecssl.util import make_progress
+
+        # Prepare model, optimizer, scheduler, and dataloaders
+        if val_loader is not None:
+            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader, val_loader
+            )
+        else:
+            self.model, self.optimizer, train_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader
+            )
+
+        if self._scheduler is not None:
+            self.scheduler = self.accelerator.prepare(self._scheduler)
+
+        # Initialize trackers (wandb/tensorboard)
+        if self.accelerator.is_main_process:
+            tracker_config = self.cfg if isinstance(self.cfg, dict) else {}
+            init_kwargs = {}
+            if self.wandb_project:
+                init_kwargs["wandb"] = {"name": self.wandb_project}
+            if self.tb_dir:
+                init_kwargs["tensorboard"] = {"logging_dir": self.tb_dir}
+
+            self.accelerator.init_trackers(
+                project_name=self.wandb_project or "training",
+                config=tracker_config,
+                init_kwargs=init_kwargs if init_kwargs else None,
+            )
 
         progress = make_progress()
         with progress:
@@ -399,100 +465,66 @@ class DebugTrainer(Trainer):
             for ep in range(start_epoch, max_epochs):
                 self.model.train()
                 batch_task = progress.add_task("train", total=len(train_loader))
-                run = 0.0
+                run_loss = 0.0
+
                 for i, batch in enumerate(train_loader):
-                    with torch.amp.autocast_mode.autocast(device.type):
+                    # Forward pass (autocast handled by accelerator)
+                    with self.accelerator.autocast():
                         step = self.model(batch)
                         loss = step.loss
 
                     # Visualize once per epoch (first batch)
                     self._maybe_visualize_batch(batch, step, ep, i)
 
-                    scaler.scale(loss).backward()
+                    # Backward pass
+                    self.accelerator.backward(loss)
 
-                    # Check gradients on first step
-                    if self.check_gradients and not self.first_step_done:
-                        logger.info(
-                            "[bold yellow]Debug: Gradient flow check[/bold yellow]",
-                            extra={"markup": True},
-                        )
-                        grad_info, grad_summary = self.model.check_gradients()
+                    # Check gradients on first step (after backward)
+                    self._check_gradients_once()
 
-                        logger.info(
-                            f"  Total params: [bold]{grad_summary['total_params']}[/bold]",
-                            extra={"markup": True},
-                        )
-                        logger.info(
-                            f"  Params with grad: [bold]{grad_summary['params_with_grad']}[/bold] "
-                            f"({grad_summary['gradient_flow_percentage']:.1f}%)",
-                            extra={"markup": True},
-                        )
-                        logger.info(f"  Max grad norm: {grad_summary['max_grad_norm']:.6f}")
-                        logger.info(f"  Min grad norm: {grad_summary['min_grad_norm']:.6f}")
-
-                        # Show first few and last few layers
-                        logger.info("  Sample gradient norms:")
-                        shown = 0
-                        for name, info in list(grad_info.items())[:5]:
-                            if info["has_grad"]:
-                                logger.info(f"    {name}: {info['grad_norm']:.6f}")
-                                shown += 1
-                        logger.info("    ...")
-                        for name, info in list(grad_info.items())[-5:]:
-                            if info["has_grad"]:
-                                logger.info(f"    {name}: {info['grad_norm']:.6f}")
-
-                        self.first_step_done = True
-
+                    # Gradient clipping
                     if self.grad_clip:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-                    scaler.step(self.optimizer)
-                    scaler.update()
+                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+
+                    # Optimizer step
+                    self.optimizer.step()
                     self.optimizer.zero_grad()
+
+                    # Scheduler step
                     if self.scheduler:
                         self.scheduler.step()
-                    run += float(loss.detach())
+
+                    run_loss += float(loss.detach())
                     global_step = ep * len(train_loader) + i
-                    if self.tb and i % log_every == 0:
-                        self.tb.add_scalar("train/loss", run / (i + 1), global_step)
-                        if step.logs:
-                            for k, v in step.logs.items():
-                                self.tb.add_scalar(f"train/{k}", v, global_step)
-                    if self.wandb_run and i % log_every == 0:
-                        wandb_logs = {
-                            "train/loss": run / (i + 1),
+
+                    # Logging (main process only)
+                    if self.accelerator.is_main_process and i % log_every == 0:
+                        log_dict = {
+                            "train/loss": run_loss / (i + 1),
                             "epoch": ep,
-                            "step": global_step,
                         }
                         if step.logs:
                             for k, v in step.logs.items():
-                                wandb_logs[f"train/{k}"] = v
-                        self.wandb_run.log(wandb_logs)
+                                log_dict[f"train/{k}"] = v
+                        self.accelerator.log(log_dict, step=global_step)
+
                     progress.advance(batch_task)
+
                 progress.advance(epoch_task)
-                logger.info(f"epoch {ep + 1}/{max_epochs} done")
 
-                # Save checkpoint periodically
+                if self.accelerator.is_main_process:
+                    logger.info(f"epoch {ep + 1}/{max_epochs} done")
+
+                # Checkpointing
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
-                    from vecssl.trainer import save_chkpt
+                    self._save_checkpoint(ep)
 
-                    save_chkpt(
-                        model=self.model,
-                        optimizer=self.optimizer,
-                        scheduler=self.scheduler,
-                        cfg=self.cfg,
-                        checkpoint_dir=self.checkpoint_dir,
-                        ep=ep,
-                    )
-
+                # Validation
                 if val_loader and ep % 5 == 0 and ep > 1:
                     self.validate(val_loader, ep)
 
-        # Finish wandb run after training completes
-        if self.wandb_run:
-            import wandb
-
-            wandb.finish()
+        # End training (cleanup trackers)
+        self.accelerator.end_training()
 
 
 def create_dataloaders(args):
@@ -568,7 +600,13 @@ def main():
     parser.add_argument("--num-workers", type=int, default=2, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=1, help="Log every N steps")
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="Mixed precision mode",
+    )
     parser.add_argument(
         "--tb-dir", type=str, default="runs/test_autoencoder", help="TensorBoard dir"
     )
@@ -637,10 +675,6 @@ def main():
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # Setup device
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
-
     # Load checkpoint if resuming
     start_epoch = 0
     if args.resume_from:
@@ -654,56 +688,51 @@ def main():
             model=model,
             optimizer=optimizer,
             scheduler=None,  # No scheduler in this script
-            device=device,
         )
         start_epoch = metadata["epoch"] + 1
         logger.info(f"Resuming training from epoch {start_epoch}", extra={"markup": True})
 
     # Prepare wandb config (combine model config + training args)
-    wandb_config = None
+    wandb_config = {
+        # Model config
+        "max_num_groups": cfg.max_num_groups,
+        "max_seq_len": cfg.max_seq_len,
+        "encode_stages": cfg.encode_stages,
+        "decode_stages": cfg.decode_stages,
+        "use_vae": cfg.use_vae,
+        "d_model": cfg.d_model,
+        "n_layers": cfg.n_layers,
+        "n_layers_decode": cfg.n_layers_decode,
+        "n_heads": cfg.n_heads,
+        "dim_feedforward": cfg.dim_feedforward,
+        "dim_z": cfg.dim_z,
+        "dropout": cfg.dropout,
+        # Training args
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "grad_clip": args.grad_clip,
+        "num_workers": args.num_workers,
+        "log_every": args.log_every,
+        "mixed_precision": args.mixed_precision,
+        "n_params": n_params,
+    }
     if args.wandb_project:
-        wandb_config = {
-            # Model config
-            "max_num_groups": cfg.max_num_groups,
-            "max_seq_len": cfg.max_seq_len,
-            "encode_stages": cfg.encode_stages,
-            "decode_stages": cfg.decode_stages,
-            "use_vae": cfg.use_vae,
-            "d_model": cfg.d_model,
-            "n_layers": cfg.n_layers,
-            "n_layers_decode": cfg.n_layers_decode,
-            "n_heads": cfg.n_heads,
-            "dim_feedforward": cfg.dim_feedforward,
-            "dim_z": cfg.dim_z,
-            "dropout": cfg.dropout,
-            # Training args
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "lr": args.lr,
-            "grad_clip": args.grad_clip,
-            "num_workers": args.num_workers,
-            "log_every": args.log_every,
-            "device": str(device),
-            "amp": False,
-            "n_params": n_params,
-        }
         logger.info(
             f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
         )
 
     # Create trainer
-
     trainer = DebugTrainer(
         model=model,
         optimizer=optimizer,
         checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
-        device=device,
         grad_clip=args.grad_clip,
+        mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=False,  # Disable AMP for debugging
-        check_gradients=args.debug,
         wandb_project=args.wandb_project,
         cfg=wandb_config,
+        check_gradients=args.debug,
     )
 
     # Run training

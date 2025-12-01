@@ -1,12 +1,13 @@
-"""Base trainer for all SSL experiments"""
+"""Base trainer for all SSL experiments using Accelerate"""
 
 import logging
+from pathlib import Path
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
+from accelerate import Accelerator
+from accelerate.utils import ProjectConfiguration
+
 from vecssl.util import make_progress
-import wandb
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -17,25 +18,55 @@ class Trainer:
         model,
         optimizer,
         checkpoint_dir=None,
-        device=None,
         scheduler=None,
-        amp=True,
         grad_clip=None,
+        mixed_precision="no",  # "no", "fp16", or "bf16"
         tb_dir=None,
         wandb_project=None,
         cfg=None,
     ) -> None:
-        self.model = model
+        # Store unprepared objects - will be prepared in run()
+        self._model = model
+        self._optimizer = optimizer
+        self._scheduler = scheduler
         self.checkpoint_dir = checkpoint_dir
-        self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.optimizer = optimizer
-        self.scheduler = scheduler
-        self.amp = amp
         self.grad_clip = grad_clip
-        self.tb = SummaryWriter(tb_dir) if tb_dir else None
-        self.wandb_run = wandb.init(project=wandb_project, config=cfg) if wandb_project else None
         self.cfg = cfg
+        self.tb_dir = tb_dir
+        self.wandb_project = wandb_project
         self.best_val_loss = float("inf")
+
+        # Setup logging backends for Accelerator
+        log_with = []
+        if tb_dir:
+            log_with.append("tensorboard")
+        if wandb_project:
+            log_with.append("wandb")
+
+        # Project configuration for checkpointing
+        project_config = None
+        if checkpoint_dir:
+            project_config = ProjectConfiguration(
+                project_dir=str(checkpoint_dir),
+                logging_dir=tb_dir,
+            )
+
+        # Create Accelerator
+        self.accelerator = Accelerator(
+            mixed_precision=mixed_precision,
+            log_with=log_with if log_with else None,
+            project_config=project_config,
+        )
+
+        # These will be set in run() after prepare()
+        self.model = None
+        self.optimizer = None
+        self.scheduler = None
+
+    @property
+    def device(self):
+        """For backward compatibility - returns the accelerator's device"""
+        return self.accelerator.device
 
     def run(
         self,
@@ -46,9 +77,33 @@ class Trainer:
         save_every=1,
         start_epoch=0,
     ):
-        device = self.device
-        self.model.to(device)
-        scaler = torch.amp.grad_scaler.GradScaler(enabled=self.amp)
+        # Prepare model, optimizer, scheduler, and dataloaders
+        if val_loader is not None:
+            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader, val_loader
+            )
+        else:
+            self.model, self.optimizer, train_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader
+            )
+
+        if self._scheduler is not None:
+            self.scheduler = self.accelerator.prepare(self._scheduler)
+
+        # Initialize trackers (wandb/tensorboard)
+        if self.accelerator.is_main_process:
+            tracker_config = self.cfg if isinstance(self.cfg, dict) else {}
+            init_kwargs = {}
+            if self.wandb_project:
+                init_kwargs["wandb"] = {"name": self.wandb_project}
+            if self.tb_dir:
+                init_kwargs["tensorboard"] = {"logging_dir": self.tb_dir}
+
+            self.accelerator.init_trackers(
+                project_name=self.wandb_project or "training",
+                config=tracker_config,
+                init_kwargs=init_kwargs if init_kwargs else None,
+            )
 
         progress = make_progress()
         with progress:
@@ -56,84 +111,119 @@ class Trainer:
             for ep in range(start_epoch, max_epochs):
                 self.model.train()
                 batch_task = progress.add_task("train", total=len(train_loader))
-                run = 0.0
+                run_loss = 0.0
+
                 for i, batch in enumerate(train_loader):
-                    with torch.amp.autocast_mode.autocast(device.type):
+                    # Forward pass (autocast handled by accelerator)
+                    with self.accelerator.autocast():
                         step = self.model(batch)
                         loss = step.loss
-                    scaler.scale(loss).backward()
+
+                    # Backward pass
+                    self.accelerator.backward(loss)
+
+                    # Gradient clipping
                     if self.grad_clip:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-                    scaler.step(self.optimizer)
-                    scaler.update()
+                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+
+                    # Optimizer step
+                    self.optimizer.step()
                     self.optimizer.zero_grad()
+
+                    # Scheduler step
                     if self.scheduler:
                         self.scheduler.step()
-                    run += float(loss.detach())
+
+                    run_loss += float(loss.detach())
                     global_step = ep * len(train_loader) + i
-                    if self.tb and i % log_every == 0:
-                        self.tb.add_scalar("train/loss", run / (i + 1), global_step)
-                        for k, v in step.logs.items():
-                            self.tb.add_scalar(f"train/{k}", v, global_step)
-                    if self.wandb_run and i % log_every == 0:
-                        wandb_logs = {
-                            "train/loss": run / (i + 1),
+
+                    # Logging (main process only)
+                    if self.accelerator.is_main_process and i % log_every == 0:
+                        log_dict = {
+                            "train/loss": run_loss / (i + 1),
                             "epoch": ep,
-                            "step": global_step,
                         }
-                        for k, v in step.logs.items():
-                            wandb_logs[f"train/{k}"] = v
-                        self.wandb_run.log(wandb_logs)
+                        if step.logs:
+                            for k, v in step.logs.items():
+                                log_dict[f"train/{k}"] = v
+                        self.accelerator.log(log_dict, step=global_step)
+
                     progress.advance(batch_task)
+
                 progress.advance(epoch_task)
-                logger.info(f"epoch {ep + 1}/{max_epochs} done")
+
+                if self.accelerator.is_main_process:
+                    logger.info(f"epoch {ep + 1}/{max_epochs} done")
+
+                # Checkpointing
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
-                    save_chkpt(
-                        model=self.model,
-                        optimizer=self.optimizer,
-                        scheduler=self.scheduler,
-                        cfg=self.cfg,
-                        checkpoint_dir=self.checkpoint_dir,
-                        ep=ep,
-                    )
+                    self._save_checkpoint(ep)
+
+                # Validation
                 if val_loader:
                     self.validate(val_loader, ep)
 
-        # Finish wandb run after training completes
-        if self.wandb_run:
-            wandb.finish()
+        # End training (cleanup trackers)
+        self.accelerator.end_training()
 
     @torch.no_grad()
     def validate(self, val_loader, ep):
         self.model.eval()
         losses = []
-        for batch in val_loader:
-            step = self.model(batch)
-            losses.append(float(step.loss))
-        val_loss = sum(losses) / max(1, len(losses))
-        if self.tb:
-            self.tb.add_scalar("val/loss", val_loss, ep)
-        if self.wandb_run:
-            self.wandb_run.log({"val/loss": val_loss, "epoch": ep})
 
-        # Save best model checkpoint
-        if self.checkpoint_dir and val_loss < self.best_val_loss:
-            self.best_val_loss = val_loss
-            logger.info(f"New best validation loss: {val_loss:.6f} - saving best model")
+        for batch in val_loader:
+            with self.accelerator.autocast():
+                step = self.model(batch)
+            # Gather losses from all processes
+            gathered_loss = self.accelerator.gather(step.loss)
+            losses.append(float(gathered_loss.mean()))
+
+        val_loss = sum(losses) / max(1, len(losses))
+
+        # Logging (main process only)
+        if self.accelerator.is_main_process:
+            self.accelerator.log({"val/loss": val_loss, "epoch": ep})
+
+            # Save best model checkpoint
+            if self.checkpoint_dir and val_loss < self.best_val_loss:
+                self.best_val_loss = val_loss
+                logger.info(f"New best validation loss: {val_loss:.6f} - saving best model")
+                self._save_checkpoint(ep, is_best=True, val_loss=val_loss)
+
+    def _save_checkpoint(self, ep, is_best=False, val_loss=None):
+        """Save checkpoint using accelerator's unwrap_model for compatibility"""
+        self.accelerator.wait_for_everyone()
+
+        if self.accelerator.is_main_process:
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
             _state = {
-                "model": self.model.state_dict(),
+                "model": unwrapped_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
                 "scheduler": self.scheduler.state_dict() if self.scheduler is not None else None,
                 "cfg": self.cfg,
                 "epoch": ep,
-                "val_loss": val_loss,
             }
+            if val_loss is not None:
+                _state["val_loss"] = val_loss
+
             if not self.checkpoint_dir.exists():
                 self.checkpoint_dir.mkdir(parents=True)
-            torch.save(_state, self.checkpoint_dir / "best_model.pt")
+
+            if is_best:
+                torch.save(_state, self.checkpoint_dir / "best_model.pt")
+            else:
+                torch.save(_state, self.checkpoint_dir / f"checkpoint_{ep:04d}.pt")
 
 
-def save_chkpt(model, optimizer, scheduler, cfg, checkpoint_dir: Path, ep: int):
+def save_chkpt(model, optimizer, scheduler, cfg, checkpoint_dir: Path, ep: int, accelerator=None):
+    """Standalone checkpoint save function for backward compatibility"""
+    if accelerator is not None:
+        # Use accelerator's unwrap if available
+        accelerator.wait_for_everyone()
+        if not accelerator.is_main_process:
+            return
+        model = accelerator.unwrap_model(model)
+
     _state = {
         "model": model.state_dict(),
         "optimizer": optimizer.state_dict(),
@@ -154,13 +244,13 @@ def load_chkpt(checkpoint_path, model, optimizer=None, scheduler=None, device=No
         model: Model to load state into
         optimizer: Optional optimizer to load state into
         scheduler: Optional scheduler to load state into
-        device: Device to map tensors to
+        device: Device to map tensors to (optional, for backward compat)
 
     Returns:
         Dictionary with checkpoint metadata (epoch, cfg, etc.)
     """
     logger.info(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     model.load_state_dict(checkpoint["model"])
 

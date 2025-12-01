@@ -43,21 +43,19 @@ def custom_collate(batch):
 def load_encoder(
     checkpoint_path: Path,
     encoder_type: str,
-    device: torch.device,
 ) -> tuple:
     """
     Load frozen encoder model from checkpoint.
 
     Args:
         checkpoint_path: Path to checkpoint file
-        encoder_type: "jepa" or "contrastive"
-        device: torch device
+        encoder_type: "jepa" or "contrastive" or "autoencoder"
 
     Returns:
         tuple: (model, config)
     """
     logger.info(f"Loading {encoder_type} encoder from {checkpoint_path}")
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
     cfg_obj = ckpt.get("cfg")
 
@@ -112,7 +110,6 @@ def load_encoder(
         )
 
     model.load_state_dict(ckpt["model"])
-    model.to(device)
     model.eval()
 
     # Freeze all parameters

@@ -107,7 +107,13 @@ def main():
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="fp16",
+        choices=["no", "fp16", "bf16"],
+        help="Mixed precision mode",
+    )
     parser.add_argument("--tb-dir", type=str, default="runs/test_jepa", help="TensorBoard dir")
 
     # Logging args
@@ -173,10 +179,6 @@ def main():
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    # Create trainer
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
-
     # Load checkpoint if resuming
     start_epoch = 0
     if args.resume_from:
@@ -190,47 +192,44 @@ def main():
             model=model,
             optimizer=optimizer,
             scheduler=None,  # No scheduler in this script
-            device=device,
         )
         start_epoch = metadata["epoch"] + 1
         logger.info(f"Resuming training from epoch {start_epoch}", extra={"markup": True})
 
     # Prepare wandb config (combine model config + training args)
-    wandb_config = None
+    wandb_config = {
+        # Model config
+        "max_num_groups": cfg.max_num_groups,
+        "max_seq_len": cfg.max_seq_len,
+        "use_resnet": cfg.use_resnet,
+        "predictor_type": cfg.predictor_type,
+        "d_model": cfg.d_model,
+        "n_layers": cfg.n_layers,
+        "n_layers_decode": cfg.n_layers_decode,
+        "n_heads": cfg.n_heads,
+        "dim_feedforward": cfg.dim_feedforward,
+        "dim_z": cfg.dim_z,
+        "dropout": cfg.dropout,
+        "d_joint": cfg.d_joint,
+        "predictor_transformer_num_heads": cfg.predictor_transformer_num_heads,
+        "predictor_transformer_num_layers": cfg.predictor_transformer_num_layers,
+        "predictor_transformer_hidden_dim": cfg.predictor_transformer_hidden_dim,
+        "predictor_transformer_dropout": cfg.predictor_transformer_dropout,
+        "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
+        "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
+        "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
+        # Training args
+        "batch_size": args.batch_size,
+        "epochs": args.epochs,
+        "lr": args.lr,
+        "grad_clip": args.grad_clip,
+        "num_workers": args.num_workers,
+        "log_every": args.log_every,
+        "mixed_precision": args.mixed_precision,
+        "n_params": n_params,
+        "model_name": "jepa",
+    }
     if args.wandb_project:
-        wandb_config = {
-            # Model config
-            "max_num_groups": cfg.max_num_groups,
-            "max_seq_len": cfg.max_seq_len,
-            "use_resnet": cfg.use_resnet,
-            "predictor_type": cfg.predictor_type,
-            "d_model": cfg.d_model,
-            "n_layers": cfg.n_layers,
-            "n_layers_decode": cfg.n_layers_decode,
-            "n_heads": cfg.n_heads,
-            "dim_feedforward": cfg.dim_feedforward,
-            "dim_z": cfg.dim_z,
-            "dropout": cfg.dropout,
-            "d_joint": cfg.d_joint,
-            "predictor_transformer_num_heads": cfg.predictor_transformer_num_heads,
-            "predictor_transformer_num_layers": cfg.predictor_transformer_num_layers,
-            "predictor_transformer_hidden_dim": cfg.predictor_transformer_hidden_dim,
-            "predictor_transformer_dropout": cfg.predictor_transformer_dropout,
-            "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
-            "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
-            "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
-            # Training args
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "lr": args.lr,
-            "grad_clip": args.grad_clip,
-            "num_workers": args.num_workers,
-            "log_every": args.log_every,
-            "device": str(device),
-            "amp": True,
-            "n_params": n_params,
-            "model_name": "jepa",
-        }
         logger.info(
             f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
         )
@@ -239,10 +238,9 @@ def main():
         model=model,
         optimizer=optimizer,
         checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
-        device=device,
         grad_clip=args.grad_clip,
+        mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=True,
         wandb_project=args.wandb_project,
         cfg=wandb_config,
     )

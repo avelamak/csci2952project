@@ -89,18 +89,23 @@ class FrozenEncoderLinearProbe(nn.Module):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
+def evaluate(model, loader, accelerator):
     """Evaluate model accuracy on a dataset."""
     model.eval()
     correct = 0
     total = 0
 
+    # Get unwrapped model for accessing encoder
+    unwrapped = accelerator.unwrap_model(model)
+    device = accelerator.device
+
     for batch in loader:
+        # Move batch to device (loader may not be prepared)
         batch_device = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
 
-        joint = model.encoder.encode_joint(batch_device)
+        joint = unwrapped.encoder.encode_joint(batch_device)
         z = joint["svg"]
-        logits = model.classifier(z)
+        logits = unwrapped.classifier(z)
         labels = batch_device["label"]
 
         # Filter valid labels
@@ -150,11 +155,8 @@ def main():
     logger.info("Linear Probe Evaluation")
     logger.info("=" * 60)
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-
     # Load frozen encoder
-    encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type, device)
+    encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type)
 
     # Determine embedding dimension
     if args.encoder_type == "jepa":
@@ -187,32 +189,27 @@ def main():
     logger.info(f"Embedding dimension: {embed_dim}")
 
     # Create probe model
-    model = FrozenEncoderLinearProbe(encoder, num_classes, embed_dim).to(device)
+    model = FrozenEncoderLinearProbe(encoder, num_classes, embed_dim)
 
     # Only train the classifier
     optimizer = torch.optim.Adam(model.classifier.parameters(), lr=args.lr)
 
-    # Setup trainer
-    wandb_config = (
-        {
-            "encoder_type": args.encoder_type,
-            "num_classes": num_classes,
-            "embed_dim": embed_dim,
-            "lr": args.lr,
-            "epochs": args.epochs,
-            "batch_size": args.batch_size,
-        }
-        if args.wandb_project
-        else None
-    )
+    # Setup trainer config
+    wandb_config = {
+        "encoder_type": args.encoder_type,
+        "num_classes": num_classes,
+        "embed_dim": embed_dim,
+        "lr": args.lr,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+    }
 
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
         checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
-        device=device,
+        mixed_precision="no",
         tb_dir=args.tb_dir,
-        amp=False,
         grad_clip=None,
         wandb_project=args.wandb_project,
         cfg=wandb_config,
@@ -229,8 +226,8 @@ def main():
         start_epoch=0,
     )
 
-    # Final evaluation
-    final_acc = evaluate(model, train_loader, device)
+    # Final evaluation using trainer's accelerator
+    final_acc = evaluate(trainer.model, train_loader, trainer.accelerator)
     logger.info(f"Final accuracy: {final_acc * 100:.2f}%")
 
 
