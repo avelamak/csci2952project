@@ -103,6 +103,9 @@ class Trainer:
                 init_kwargs=init_kwargs if init_kwargs else None,
             )
 
+        # Ensure all processes ready before training loop
+        self.accelerator.wait_for_everyone()
+
         progress = make_progress()
         with progress:
             epoch_task = progress.add_task("epoch", total=max_epochs - start_epoch)
@@ -162,6 +165,7 @@ class Trainer:
                     self.validate(val_loader, ep)
 
         # End training (cleanup trackers)
+        self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
 
     @torch.no_grad()

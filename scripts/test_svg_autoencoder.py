@@ -340,10 +340,11 @@ class DebugTrainer(Trainer):
         # ---------------- Predicted SVG (via greedy_sample) ----------------
         # Get the unwrapped model for greedy_sample
         unwrapped_model = self.accelerator.unwrap_model(self.model)
+        device = next(unwrapped_model.parameters()).device
 
-        # batch tensors are already on the correct device via accelerator
-        enc_commands = batch["commands"][b : b + 1]  # [1, G, S]
-        enc_args = batch["args"][b : b + 1]  # [1, G, S, n_args]
+        # Explicitly move tensors to model device for multi-GPU safety
+        enc_commands = batch["commands"][b : b + 1].to(device, non_blocking=True)  # [1, G, S]
+        enc_args = batch["args"][b : b + 1].to(device, non_blocking=True)  # [1, G, S, n_args]
 
         with torch.no_grad():
             # Use the SVGTransformer's own sampling logic
@@ -457,6 +458,9 @@ class DebugTrainer(Trainer):
                 init_kwargs=init_kwargs if init_kwargs else None,
             )
 
+        # Ensure all processes ready before training loop
+        self.accelerator.wait_for_everyone()
+
         progress = make_progress()
         with progress:
             epoch_task = progress.add_task("epoch", total=max_epochs - start_epoch)
@@ -522,6 +526,7 @@ class DebugTrainer(Trainer):
                     self.validate(val_loader, ep)
 
         # End training (cleanup trackers)
+        self.accelerator.wait_for_everyone()
         self.accelerator.end_training()
 
 
