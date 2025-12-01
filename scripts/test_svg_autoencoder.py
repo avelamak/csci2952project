@@ -521,9 +521,11 @@ class DebugTrainer(Trainer):
                 if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
                     self._save_checkpoint(ep)
 
-                # Validation
+                # Validation (only rank 0 runs, others wait)
                 if val_loader and ep % 5 == 0 and ep > 1:
-                    self.validate(val_loader, ep)
+                    if self.accelerator.is_main_process:
+                        self.validate(val_loader, ep)
+                    self.accelerator.wait_for_everyone()
 
         # End training (cleanup trackers)
         self.accelerator.wait_for_everyone()
