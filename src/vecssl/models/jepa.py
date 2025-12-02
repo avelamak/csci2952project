@@ -67,7 +67,7 @@ class Jepa(JointModel):
         self.svg_encoder = Encoder(cfg)
         if cfg.use_resnet:
             self.resnet = ResNet(cfg.d_model)
-        # self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
+        self.svg_projector = nn.Linear(self.svg_encoder.cfg.d_model, cfg.d_joint)
 
         if cfg.predictor_type == "transformer":
             self.predictor = PredictorTransformer(
@@ -106,9 +106,9 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        # z_svg = self.svg_projector(z_svg)
+        z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg)
-        z_svg = z_svg.squeeze(2).mean(dim=1)
+        z_svg = z_svg.squeeze()
         z_svg = self.predictor(z_svg)
         z_svg = F.normalize(z_svg, dim=-1)
 
@@ -137,9 +137,9 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        # z_svg = self.svg_projector(z_svg)
+        z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
-        z_svg = z_svg.squeeze(2).mean(dim=1)
+        z_svg = z_svg.squeeze()
         z_svg = F.normalize(z_svg, dim=-1)
 
         z_img = self.image_encoder(images)
