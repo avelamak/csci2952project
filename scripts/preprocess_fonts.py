@@ -51,26 +51,20 @@ def _init_worker(output_svg_folder, output_img_folder, to_tensor):
     _TO_TENSOR = to_tensor
 
 
-def family_to_label(family: str) -> int:
-    """Convert family name to deterministic integer label."""
-    label = 0
-    for ch in family.lower():
-        if ch.isalpha():
-            v = ord(ch) - 97  # a=0 … z=25
-        elif ch.isdigit():
-            v = ord(ch) - 48 + 26  # 0=26 … 9=35
-        else:
-            v = 36  # fallback bucket for punctuation, hyphens etc.
-        label = label * 37 + v  # base-37 encoding to ensure no collisions
-    return label
+def family_to_labels(svg_paths):
+    """Convert family name to integer label."""
+    family_names = [path.parent.name.split("-")[0] for path in svg_paths]
+    family_names = list(set(family_names))
+    family_names = sorted(family_names)
+    return family_names
 
 
-def preprocess_glyph(svg_path: Path) -> dict | None:
+def preprocess_glyph(svg_path: Path, family_labels: list) -> dict | None:
     """Process a single glyph SVG."""
     try:
         font_name = svg_path.parent.name
         family_name = font_name.split("-")[0]
-        family_name_label = family_to_label(family_name)
+        family_label = family_labels.index(family_name)
         char = filename_to_char(svg_path.name)
         label = char_to_label(char)
         uuid = f"{font_name}_{svg_path.stem}"
@@ -105,7 +99,7 @@ def preprocess_glyph(svg_path: Path) -> dict | None:
             "uuid": uuid,
             "font_name": font_name,
             "family_name": family_name,
-            "family_name_label": family_name_label,
+            "family_label": family_label,
             "char": char,
             "label": label,
             "total_len": sum(len_groups),
@@ -178,6 +172,8 @@ def main():
     progress = make_progress(console)
     batch_size = args.workers * 32
 
+    family_labels = family_to_labels(svg_files)
+
     with progress:
         task = progress.add_task("Processing glyphs", total=len(svg_files))
 
@@ -190,7 +186,7 @@ def main():
                 batch_end = min(batch_start + batch_size, len(svg_files))
                 batch = svg_files[batch_start:batch_end]
 
-                futures = {executor.submit(preprocess_glyph, p): p for p in batch}
+                futures = {executor.submit(preprocess_glyph, p, family_labels): p for p in batch}
 
                 for future in as_completed(futures):
                     result = future.result()
