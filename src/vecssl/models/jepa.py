@@ -137,7 +137,7 @@ class Jepa(JointModel):
         z_svg = self.svg_encoder(commands_enc, args_enc)
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        # z_svg = self.svg_projector(z_svg)
+        z_svg = self.svg_projector(z_svg)
         z_svg = _make_batch_first(z_svg).squeeze()
         z_svg = z_svg.squeeze()
         z_svg = F.normalize(z_svg, dim=-1)

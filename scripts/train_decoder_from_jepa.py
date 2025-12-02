@@ -27,6 +27,7 @@ from torch.utils.data import DataLoader
 from vecssl.data.dataset import SVGXDataset
 from vecssl.models.config import _DefaultConfig, JepaConfig
 from vecssl.models.jepa import Jepa
+from vecssl.trainer import Trainer
 
 # from vecssl.trainer import Trainer  # only used indirectly via DebugTrainer
 from vecssl.util import setup_logging
@@ -34,7 +35,6 @@ from vecssl.util import setup_logging
 # Reuse components from test_svg_autoencoder
 from test_svg_autoencoder import (
     SimpleSVGAutoencoder,
-    DebugTrainer,
     custom_collate,
 )
 
@@ -387,8 +387,7 @@ def main() -> None:
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # 9. Create trainer
-    trainer = DebugTrainer(
+    trainer = Trainer(
         model=model,
         optimizer=optimizer,
         checkpoint_dir=checkpoint_dir,
@@ -396,7 +395,6 @@ def main() -> None:
         grad_clip=args.grad_clip,
         tb_dir=args.tb_dir,
         amp=True,  # AMP for faster training
-        check_gradients=args.debug,
         wandb_project=args.wandb_project,
         cfg=wandb_config,
     )
