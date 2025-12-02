@@ -87,7 +87,7 @@ def create_dataloaders(args):
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=8,
-        max_seq_len=40,
+        max_seq_len=30,
         train_ratio=1.0,
         already_preprocessed=True,
     )
@@ -109,9 +109,9 @@ def create_dataloaders(args):
 def main():
     parser = argparse.ArgumentParser()
     # Dataset args
-    parser.add_argument("--svg-dir", type=str, default="svgx_svgs", help="SVG directory")
-    parser.add_argument("--img-dir", type=str, default="svgx_imgs", help="Image directory")
-    parser.add_argument("--meta", type=str, default="svgx_meta.csv", help="Metadata CSV")
+    parser.add_argument("--svg-dir", type=str, default="data/fonts/svg", help="SVG directory")
+    parser.add_argument("--img-dir", type=str, default="data/fonts/img", help="Image directory")
+    parser.add_argument("--meta", type=str, default="data/fonts/metadata.csv", help="Metadata CSV")
 
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--device", type=str, default="cpu")
