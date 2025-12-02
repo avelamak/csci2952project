@@ -76,10 +76,10 @@ def preprocess_glyph(svg_path: Path) -> dict | None:
 
         # Then do vecssl processing for SVG/tensor output
         svg = SVG.load_svg(svg_code).to_path()
-        # svg.fill_(False)
-        # svg.normalize()
-        # svg.zoom(0.9)
-        # svg.canonicalize()
+        svg.fill_(False)
+        svg.normalize()
+        svg.zoom(0.9)
+        svg.canonicalize()
         # svg = svg.simplify_heuristic()
 
         # Compute metrics

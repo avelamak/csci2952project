@@ -56,8 +56,7 @@ class SVGXDataset(Dataset):
         df = pd.read_csv(meta_filepath)
 
         # Filter by constraints (like DeepSVG)
-        # df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len)]
-        df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len - 20)]
+        df = df[(df.nb_groups <= max_num_groups) & (df.max_len_group <= max_seq_len)]
 
         # Shuffle with seed for reproducible splits
         df_shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
