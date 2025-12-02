@@ -30,7 +30,7 @@ from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
 
 # from vecssl.trainer import Trainer  # only used indirectly via DebugTrainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
 
 # Reuse components from test_svg_autoencoder
 from test_svg_autoencoder import (
@@ -171,33 +171,49 @@ def count_parameters(model: nn.Module) -> tuple[int, int, int]:
     return total, trainable, total - trainable
 
 
-def create_dataloaders(args) -> tuple[DataLoader, DataLoader]:
-    """
-    Create train and val dataloaders (both over the same dataset).
-    """
-    logger.info("Creating dataset...")
-    dataset = SVGXDataset(
+def create_dataloaders(args):
+    """Create train and val dataloaders"""
+    logger.info("Creating datasets...")
+
+    # Training dataset (80% of data)
+    train_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=1.0,  # use all data
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
-    logger.info("Dataset size: %d samples", len(dataset))
 
+    # Validation dataset (10% of data)
+    val_dataset = SVGXDataset(
+        svg_dir=args.svg_dir,
+        img_dir=args.img_dir,
+        meta_filepath=args.meta,
+        max_num_groups=args.max_num_groups,
+        max_seq_len=args.max_seq_len,
+        split="val",
+        seed=args.seed,
+        already_preprocessed=True,
+    )
+
+    logger.info(f"  Train samples: {len(train_dataset)}")
+    logger.info(f"  Val samples: {len(val_dataset)}")
+
+    # Create dataloaders
     train_loader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=True,
+        drop_last=False,  # Drop incomplete batches
     )
 
     val_loader = DataLoader(
-        dataset,
+        val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
@@ -236,6 +252,7 @@ def build_wandb_config(
         "n_params_frozen": frozen,
         "jepa_checkpoint": str(args.jepa_checkpoint),
         "encoder_frozen": True,
+        "random_seed": args.seed,
     }
 
 
@@ -273,6 +290,7 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=100, help="Log every N steps")
     parser.add_argument("--save-every", type=int, default=5, help="Save checkpoint every N epochs")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Checkpoint args
     parser.add_argument(
@@ -296,6 +314,9 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Set random seed for reproducibility
+    set_seed(args.seed)
+
     # Setup logging
     setup_logging(
         level=args.log_level,
@@ -305,6 +326,7 @@ def main() -> None:
     )
 
     logger.info("=" * 60)
+    logger.info(f"Random seed: {args.seed}")
     logger.info("JEPA Decoder Training")
     logger.info("=" * 60)
 
