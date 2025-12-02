@@ -10,7 +10,7 @@ from vecssl.data.dataset import SVGXDataset
 from vecssl.models.config import JepaConfig
 from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
 
 logger = logging.getLogger(__name__)
 
@@ -44,18 +44,20 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.8,
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
-    # Validation dataset (20% of data)
+    # Validation dataset (10% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.2,
+        split="val",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
@@ -109,6 +111,7 @@ def main():
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--tb-dir", type=str, default="runs/test_jepa", help="TensorBoard dir")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
@@ -138,11 +141,15 @@ def main():
 
     args = parser.parse_args()
 
+    # Set random seed for reproducibility
+    set_seed(args.seed)
+
     setup_logging(
         level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True
     )
 
     logger.info("=" * 60)
+    logger.info(f"Random seed: {args.seed}")
     logger.info("[bold cyan]JEPA Training[/bold cyan]", extra={"markup": True})
     logger.info("=" * 60)
 
@@ -230,6 +237,7 @@ def main():
             "amp": True,
             "n_params": n_params,
             "model_name": "jepa",
+            "random_seed": args.seed,
         }
         logger.info(
             f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
