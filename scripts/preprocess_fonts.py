@@ -55,6 +55,7 @@ def preprocess_glyph(svg_path: Path) -> dict | None:
     """Process a single glyph SVG."""
     try:
         font_name = svg_path.parent.name
+        family_name = font_name.split("-")[0]
         char = filename_to_char(svg_path.name)
         label = char_to_label(char)
         uuid = f"{font_name}_{svg_path.stem}"
@@ -88,6 +89,7 @@ def preprocess_glyph(svg_path: Path) -> dict | None:
         metadata = {
             "uuid": uuid,
             "font_name": font_name,
+            "family_name": family_name,
             "char": char,
             "label": label,
             "total_len": sum(len_groups),
