@@ -37,7 +37,7 @@ def custom_collate(batch):
     return collated
 
 
-def create_dataloaders(args):
+def create_dataloaders(args, cfg):
     """Create train and val dataloaders"""
     logger.info("Creating datasets...")
 
@@ -156,7 +156,7 @@ def main():
     cfg.contrastive_logit_scale = args.temp
 
     # Create dataloaders
-    train_loader, val_loader = create_dataloaders(args)
+    train_loader, val_loader = create_dataloaders(args, cfg)
 
     # Create model
     logger.info("Creating model...")
