@@ -1,0 +1,9 @@
+## SLURM PROLOG ###############################################################
+##    Job ID : 14699330
+##  Job Name : Contrastive
+##  Nodelist : gpu2007
+##      CPUs : 
+##  Mem/Node : 65536 MB
+## Directory : /oscar/home/bsteedly/csci2952project
+##   Job Started : Wed Dec  3 12:48:34 PM EST 2025
+###############################################################################

@@ -1,0 +1,26 @@
+wandb: Currently logged in as: bella_steedly (bella_steedly-brown-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+[12/03/25 12:49:08] INFO     ========================== train_contrastive.py:145
+                             ==========================                         
+                             ========                                           
+                    INFO     Contrastive Training/bold  train_contrastive.py:146
+                             cyan]                                              
+                    INFO     ========================== train_contrastive.py:147
+                             ==========================                         
+                             ========                                           
+                    INFO     Creating datasets...        train_contrastive.py:43
+[12/03/25 12:49:09] INFO       Train samples: 156354     train_contrastive.py:67
+                    INFO       Val samples: 39088        train_contrastive.py:68
+                    INFO     Creating model...          train_contrastive.py:160
+[12/03/25 12:49:10] INFO     Total parameters:          train_contrastive.py:165
+                             27,011,137                                         
+                    INFO     Using device: cuda         train_contrastive.py:172
+                    INFO     Wandb enabled - project:   train_contrastive.py:214
+                             vecssl_contrastive                                 
+wandb: Currently logged in as: bella_steedly (bella_steedly-brown-university) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.23.1
+wandb: Run data is saved locally in /oscar/home/bsteedly/csci2952project/wandb/run-20251203_124910-13ofwau1
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run toasty-terrain-42
+wandb: ⭐️ View project at https://wandb.ai/bella_steedly-brown-university/vecssl_contrastive
+wandb: 🚀 View run at https://wandb.ai/bella_steedly-brown-university/vecssl_contrastive/runs/13ofwau1
+[12/03/25 12:49:12] INFO     Starting training...       train_contrastive.py:231
