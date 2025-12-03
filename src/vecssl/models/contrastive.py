@@ -14,9 +14,6 @@ class ContrastiveModel(JointModel):
         super().__init__()
         self.cfg = cfg
 
-        self.image_encoder = DINOImageEncoder()
-        self.image_dim = 768
-
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / cfg.contrastive_logit_scale))
 
         # Initialize SVG embedding model
@@ -24,40 +21,47 @@ class ContrastiveModel(JointModel):
         if cfg.use_resnet:
             self.resnet = ResNet(cfg.d_model)
 
-        # Projection heads
-        self.svg_projection = nn.Sequential(
-            nn.Linear(cfg.dim_z, cfg.joint_dim),
-            nn.BatchNorm1d(cfg.joint_dim),
-            nn.ReLU(),
-            nn.Linear(cfg.joint_dim, cfg.joint_dim),
-        )
-        self.img_projection = nn.Sequential(
-            nn.Linear(self.image_dim, cfg.joint_dim),
-            nn.BatchNorm1d(cfg.joint_dim),
-            nn.ReLU(),
-            nn.Linear(cfg.joint_dim, cfg.joint_dim),
-        )
+        # Initialize DINO embedding model
+        self.image_encoder = DINOImageEncoder()
+        for param in self.image_encoder.parameters():
+            param.requires_grad = False
+
+        self.svg_proj = nn.Linear(self.cfg.d_joint, self.cfg.d_model)
+        self.img_proj = nn.Linear(self.image_encoder.backbone.config.hidden_size, self.cfg.d_model)
 
     def encode_joint(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Encode SVGs and images into a joint embedding space.
         """
         # Encode SVG
-        svg_commands = batch["commands"]
-        svg_args = batch["args"]
+        device = next(self.parameters()).device
+
+        svg_commands = batch["commands"].to(device)
+        svg_args = batch["args"].to(device)
+
         commands_enc, args_enc = _make_seq_first(svg_commands, svg_args)
         z_svg = self.encoder(commands_enc, args_enc)  # [batch, dim_z]
+
+        # remove extra 1 dim
+        z_svg = z_svg.squeeze()
+
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-        z_svg = z_svg.squeeze(0).squeeze(0)
-        z_svg = self.svg_projection(z_svg)  # Project to joint space
 
         # Encode image
-        img = batch["image"]
-        z_img = self.image_encoder(img)  # [batch, img_dim]
-        z_img = self.img_projection(z_img)  # Project to joint space
+        img = batch["image"].to(device)
+        with torch.no_grad():
+            z_img = self.image_encoder(img)  # [batch, img_dim]
 
-        return {"svg": F.normalize(z_svg, dim=-1), "img": F.normalize(z_img, dim=-1)}
+        # Project to joint space
+        z_svg = self.svg_proj(z_svg)
+        z_img = self.img_proj(z_img)
+
+        # Normalize
+        z_svg = F.normalize(z_svg, dim=-1)
+        z_img = F.normalize(z_img, dim=-1)
+
+        return {"svg": z_svg, "img": z_img}
 
     def forward(self, batch: dict[str, any]) -> TrainStep:
         """

@@ -17,7 +17,7 @@ class _DefaultConfig:
 
         self.model_type = "transformer"  # "transformer" ("lstm" implementation is work in progress)
 
-        self.encode_stages = 1  # One-stage or two-stage: 1 | 2
+        self.encode_stages = 2  # One-stage or two-stage: 1 | 2
         self.decode_stages = 1  # One-stage or two-stage: 1 | 2
 
         self.use_resnet = True  # Use extra fully-connected residual blocks after Encoder
@@ -138,8 +138,9 @@ class ContrastiveConfig(_DefaultConfig):
     def __init__(self):
         super().__init__()
         self.contrastive_logit_scale = 0.07
-        self.joint_dim = 512  # Joint embedding dimension
+        self.d_joint = 768
         self.use_group = True
+        self.d_model = self.d_joint
 
 
 class JepaConfig(_DefaultConfig):

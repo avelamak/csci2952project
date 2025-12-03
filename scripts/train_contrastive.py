@@ -5,6 +5,7 @@ Minimal Contrastive Test Script
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
@@ -14,28 +15,10 @@ from vecssl.models.contrastive import ContrastiveModel
 from vecssl.models.config import ContrastiveConfig
 from vecssl.trainer import Trainer
 from vecssl.util import setup_logging, set_seed
-
 from eval_utils import custom_collate
 
+logging.getLogger("PIL").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-
-def custom_collate(batch):
-    """Custom collate function that handles SVGTensor objects"""
-    collated = {}
-
-    # Stack tensors normally
-    collated["commands"] = torch.stack([item["commands"] for item in batch])
-    collated["args"] = torch.stack([item["args"] for item in batch])
-    collated["image"] = torch.stack([item["image"] for item in batch])
-
-    # Keep SVGTensor objects and strings as lists
-    collated["tensors"] = [item["tensors"] for item in batch]
-    collated["uuid"] = [item["uuid"] for item in batch]
-    collated["name"] = [item["name"] for item in batch]
-    collated["source"] = [item["source"] for item in batch]
-
-    return collated
 
 
 def create_dataloaders(args, cfg):
@@ -92,7 +75,7 @@ def create_dataloaders(args, cfg):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test Contrastive")
+    parser = argparse.ArgumentParser(description="Train Contrastive model")
 
     # Dataset args
     parser.add_argument("--svg-dir", type=str, default="svgx_svgs", help="SVG directory")
@@ -102,10 +85,10 @@ def main():
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
-    parser.add_argument("--encode-stages", type=int, default=2, help="Encoder stages (1 or 2)")
-    parser.add_argument("--decode-stages", type=int, default=2, help="Decoder stages (1 or 2)")
-    parser.add_argument("--use-vae", action="store_true", default=True, help="Use VAE")
-    parser.add_argument("--temp", type=float, default=0.07, help="CLIP temperature parameter")
+    parser.add_argument("--use-resnet", action="store_true", default=False, help="Use ResNet")
+    parser.add_argument(
+        "--temp", type=float, default=0.07, help="Temperature param for contrastive"
+    )
 
     # Training args
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
@@ -125,21 +108,25 @@ def main():
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
-    parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode (print shapes & gradients)"
-    )
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Wandb args
     parser.add_argument(
-        "--wandb-project",
-        type=str,
-        default="vecssl",
-        help="Wandb project name (enables wandb if set)",
+        "--wandb-project", type=str, default=None, help="Wandb project name (enables wandb if set)"
     )
     parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
     parser.add_argument(
-        "--wandb-entity", type=str, default="vecssl", help="Wandb entity/team (optional)"
+        "--wandb-entity", type=str, default=None, help="Wandb entity/team (optional)"
+    )
+
+    # Checkpoint args
+    parser.add_argument(
+        "--checkpoint-dir", type=str, default=None, help="Directory to save checkpoints"
+    )
+    parser.add_argument("--save-every", type=int, default=1, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--resume-from", type=str, default=None, help="Path to checkpoint to resume from"
     )
 
     args = parser.parse_args()
@@ -156,16 +143,14 @@ def main():
     )
 
     logger.info("=" * 60)
-    logger.info("[bold cyan]SVG Contrastive Test[/bold cyan]", extra={"markup": True})
+    logger.info("[bold cyan]Contrastive Training/bold cyan]", extra={"markup": True})
     logger.info("=" * 60)
 
     # Create config
     cfg = ContrastiveConfig()
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
-    cfg.encode_stages = args.encode_stages
-    cfg.decode_stages = args.decode_stages
-    cfg.use_vae = args.use_vae
+    cfg.use_resnet = args.use_resnet
     cfg.contrastive_logit_scale = args.temp
 
     # Create dataloaders
@@ -183,12 +168,61 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
     # Create trainer
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
+
+    # Load checkpoint if resuming
+    start_epoch = 0
+    if args.resume_from:
+        from vecssl.trainer import load_chkpt
+
+        logger.info(
+            f"Resuming from checkpoint: [bold]{args.resume_from}[/bold]", extra={"markup": True}
+        )
+        metadata = load_chkpt(
+            checkpoint_path=args.resume_from,
+            model=model,
+            optimizer=optimizer,
+            scheduler=None,  # No scheduler in this script
+            device=device,
+        )
+        start_epoch = metadata["epoch"] + 1
+        logger.info(f"Resuming training from epoch {start_epoch}", extra={"markup": True})
+
+    # Prepare wandb config (combine model config + training args)
+    wandb_config = None
+    if args.wandb_project:
+        wandb_config = {
+            # Model config
+            "max_num_groups": cfg.max_num_groups,
+            "max_seq_len": cfg.max_seq_len,
+            "use_resnet": cfg.use_resnet,
+            "d_joint": cfg.d_joint,
+            "temp": cfg.contrastive_logit_scale,
+            # Training args
+            "batch_size": args.batch_size,
+            "epochs": args.epochs,
+            "lr": args.lr,
+            "grad_clip": args.grad_clip,
+            "num_workers": args.num_workers,
+            "log_every": args.log_every,
+            "device": str(device),
+            "amp": True,
+            "n_params": n_params,
+        }
+        logger.info(
+            f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
+        )
+
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
+        checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
         grad_clip=args.grad_clip,
         mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
+        wandb_project=args.wandb_project,
+        cfg=wandb_config,
     )
 
     # Run training
@@ -199,6 +233,8 @@ def main():
             val_loader=val_loader,
             max_epochs=cfg.epochs,
             log_every=args.log_every,
+            save_every=args.save_every,
+            start_epoch=start_epoch,
         )
         logger.info(
             "[bold green]✓ Training completed successfully![/bold green]", extra={"markup": True}

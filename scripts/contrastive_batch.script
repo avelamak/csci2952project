@@ -19,12 +19,13 @@
 
 # --- Start of slurm commands -----------
 
-#SBATCH --time=2:00:00
+#SBATCH --time=24:00:00
 
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=6
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:1
+#SBATCH --nodes=1
 
 #SBATCH -J Contrastive
 #SBATCH -o Contrastive-%j.out
@@ -32,13 +33,19 @@
 
 #----- End of slurm commands ----
 
-
 source .venv/bin/activate
+
 wandb login
 
-uv run scripts/test_contrastive.py \
-    --batch-size 4 \
-    --epoch 1 \
+python scripts/train_contrastive.py \
+    --svg-dir data/fonts/svg \
+    --img-dir data/fonts/img \
+    --meta data/fonts/metadata.csv \
+    --batch-size 64 \
+    --epoch 100 \
     --lr 1e-4 \
     --log-every 1 \
-    --wandb-project "vecssl_contrastive"
+    --num-workers 0 \
+    --wandb-project vecssl_contrastive \
+    --checkpoint-dir ./checkpoints/contrastive \
+    --save-every 1
