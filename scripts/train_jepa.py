@@ -12,29 +12,9 @@ from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
 from vecssl.util import setup_logging, set_seed
 
+from eval_utils import custom_collate
+
 logger = logging.getLogger(__name__)
-
-
-def custom_collate(batch):
-    """Custom collate function that handles SVGTensor objects"""
-    collated = {}
-
-    # Stack tensors normally
-    collated["commands"] = torch.stack([item["commands"] for item in batch])
-    collated["args"] = torch.stack([item["args"] for item in batch])
-    collated["image"] = torch.stack([item["image"] for item in batch])
-
-    # Stack precomputed DINO embeddings if available
-    if "dino_embedding" in batch[0]:
-        collated["dino_embedding"] = torch.stack([item["dino_embedding"] for item in batch])
-
-    # Keep SVGTensor objects and strings as lists
-    collated["tensors"] = [item["tensors"] for item in batch]
-    collated["uuid"] = [item["uuid"] for item in batch]
-    collated["name"] = [item["name"] for item in batch]
-    collated["source"] = [item["source"] for item in batch]
-
-    return collated
 
 
 def create_dataloaders(args):
@@ -257,45 +237,12 @@ def main():
         "num_workers": args.num_workers,
         "log_every": args.log_every,
         "mixed_precision": args.mixed_precision,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
         "n_params": n_params,
         "model_name": "jepa",
+        "random_seed": args.seed,
     }
     if args.wandb_project:
-        wandb_config = {
-            # Model config
-            "max_num_groups": cfg.max_num_groups,
-            "max_seq_len": cfg.max_seq_len,
-            "use_resnet": cfg.use_resnet,
-            "predictor_type": cfg.predictor_type,
-            "d_model": cfg.d_model,
-            "n_layers": cfg.n_layers,
-            "n_layers_decode": cfg.n_layers_decode,
-            "n_heads": cfg.n_heads,
-            "dim_feedforward": cfg.dim_feedforward,
-            "dim_z": cfg.dim_z,
-            "dropout": cfg.dropout,
-            "d_joint": cfg.d_joint,
-            "predictor_transformer_num_heads": cfg.predictor_transformer_num_heads,
-            "predictor_transformer_num_layers": cfg.predictor_transformer_num_layers,
-            "predictor_transformer_hidden_dim": cfg.predictor_transformer_hidden_dim,
-            "predictor_transformer_dropout": cfg.predictor_transformer_dropout,
-            "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
-            "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
-            "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
-            "use_precomputed_dino": cfg.use_precomputed_dino,
-            # Training args
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "lr": args.lr,
-            "grad_clip": args.grad_clip,
-            "num_workers": args.num_workers,
-            "log_every": args.log_every,
-            "device": "cuda" if torch.cuda.is_available() else "cpu",
-            "amp": True,
-            "n_params": n_params,
-            "model_name": "jepa",
-            "random_seed": args.seed,
-        }
         logger.info(
             f"Wandb enabled - project: [bold]{args.wandb_project}[/bold]", extra={"markup": True}
         )

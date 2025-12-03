@@ -27,8 +27,9 @@ def custom_collate(batch):
     Standard collate for SVGXDataset.
 
     Stacks tensors, keeps lists for non-tensor fields.
+    Handles optional fields like dino_embedding, label, family_label.
     """
-    return {
+    collated = {
         "commands": torch.stack([item["commands"] for item in batch]),
         "args": torch.stack([item["args"] for item in batch]),
         "image": torch.stack([item["image"] for item in batch]),
@@ -36,9 +37,21 @@ def custom_collate(batch):
         "uuid": [item["uuid"] for item in batch],
         "name": [item["name"] for item in batch],
         "source": [item["source"] for item in batch],
-        "label": torch.tensor([item["label"] for item in batch], dtype=torch.long),
-        "family_label": torch.tensor([item["family_label"] for item in batch], dtype=torch.long),
     }
+
+    # Handle optional DINO embeddings (precomputed)
+    if "dino_embedding" in batch[0]:
+        collated["dino_embedding"] = torch.stack([item["dino_embedding"] for item in batch])
+
+    # Handle optional label fields
+    if "label" in batch[0]:
+        collated["label"] = torch.tensor([item["label"] for item in batch], dtype=torch.long)
+    if "family_label" in batch[0]:
+        collated["family_label"] = torch.tensor(
+            [item["family_label"] for item in batch], dtype=torch.long
+        )
+
+    return collated
 
 
 def load_encoder(
@@ -171,9 +184,12 @@ def create_eval_dataloader(
     max_seq_len: int = 40,
     batch_size: int = 64,
     num_workers: int = 4,
+    split: str = "test",
+    seed: int = 42,
+    shuffle: bool = False,
 ) -> DataLoader:
     """
-    Create a dataloader for evaluation (uses full dataset).
+    Create a dataloader for evaluation.
 
     Args:
         svg_dir: Path to SVG directory
@@ -183,6 +199,9 @@ def create_eval_dataloader(
         max_seq_len: Max sequence length per group
         batch_size: Batch size
         num_workers: Number of dataloader workers
+        split: Data split to use ("train", "val", or "test")
+        seed: Random seed for reproducible splits
+        shuffle: Whether to shuffle the data
 
     Returns:
         DataLoader
@@ -193,20 +212,21 @@ def create_eval_dataloader(
         meta_filepath=meta_filepath,
         max_num_groups=max_num_groups,
         max_seq_len=max_seq_len,
-        train_ratio=1.0,  # Use all data for evaluation
+        split=split,
+        seed=seed,
         already_preprocessed=True,
     )
 
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=False,
+        shuffle=shuffle,
         num_workers=num_workers,
         collate_fn=custom_collate,
         drop_last=False,
     )
 
-    logger.info(f"Created eval dataloader: {len(dataset)} samples")
+    logger.info(f"Created eval dataloader ({split}): {len(dataset)} samples")
     return loader
 
 

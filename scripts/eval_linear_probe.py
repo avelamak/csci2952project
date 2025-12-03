@@ -168,7 +168,7 @@ def main():
     else:  # autoencoder
         embed_dim = cfg.dim_z
 
-    # Create dataloader
+    # Create train and val dataloaders (separate splits to avoid data leakage)
     train_loader = create_eval_dataloader(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
@@ -177,6 +177,20 @@ def main():
         max_seq_len=args.max_seq_len,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        split="train",
+        shuffle=True,
+    )
+
+    val_loader = create_eval_dataloader(
+        svg_dir=args.svg_dir,
+        img_dir=args.img_dir,
+        meta_filepath=args.meta,
+        max_num_groups=args.max_num_groups,
+        max_seq_len=args.max_seq_len,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        split="val",
+        shuffle=False,
     )
 
     # Determine number of classes from dataset
@@ -223,15 +237,15 @@ def main():
     logger.info("Starting linear probe training...")
     trainer.run(
         train_loader=train_loader,
-        val_loader=train_loader,  # Use same data for val in simple eval
+        val_loader=val_loader,
         max_epochs=args.epochs,
         log_every=args.log_every,
         save_every=args.epochs,  # Save at end
         start_epoch=0,
     )
 
-    # Final evaluation using trainer's accelerator
-    final_acc = evaluate(trainer.model, train_loader, trainer.accelerator)
+    # Final evaluation on validation set
+    final_acc = evaluate(trainer.model, val_loader, trainer.accelerator)
     logger.info(f"Final accuracy: {final_acc * 100:.2f}%")
 
 

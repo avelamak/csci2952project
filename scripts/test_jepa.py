@@ -17,27 +17,11 @@ from vecssl.data.dataset import SVGXDataset
 from vecssl.models.config import JepaConfig
 from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
+
+from eval_utils import custom_collate
 
 logger = logging.getLogger(__name__)
-
-
-def custom_collate(batch):
-    """Custom collate function that handles SVGTensor objects"""
-    collated = {}
-
-    # Stack tensors normally
-    collated["commands"] = torch.stack([item["commands"] for item in batch])
-    collated["args"] = torch.stack([item["args"] for item in batch])
-    collated["image"] = torch.stack([item["image"] for item in batch])
-
-    # Keep SVGTensor objects and strings as lists
-    collated["tensors"] = [item["tensors"] for item in batch]
-    collated["uuid"] = [item["uuid"] for item in batch]
-    collated["name"] = [item["name"] for item in batch]
-    collated["source"] = [item["source"] for item in batch]
-
-    return collated
 
 
 class SimpleJEPA(nn.Module):
@@ -246,18 +230,20 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.8,
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
-    # Validation dataset (20% of data)
+    # Validation dataset (10% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.2,
+        split="val",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
@@ -319,8 +305,12 @@ def main():
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     args = parser.parse_args()
+
+    # Set random seed for reproducibility
+    set_seed(args.seed)
 
     setup_logging(
         level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True

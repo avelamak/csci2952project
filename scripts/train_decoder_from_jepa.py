@@ -209,7 +209,7 @@ def create_dataloaders(args):
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=False,  # Drop incomplete batches
+        drop_last=True,  # Drop incomplete batches for consistent batch sizes
     )
 
     val_loader = DataLoader(
