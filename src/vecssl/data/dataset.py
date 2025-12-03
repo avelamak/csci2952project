@@ -152,6 +152,7 @@ class SVGXDataset(Dataset):
             "name": entry.get("name", ""),
             "source": entry.get("source", ""),
             "label": entry.get("label", -1),  # -1 for datasets without labels
+            "family_label": entry.get("family_label", -1),  # -1 for datasets without labels
         }
 
         # Save to cache
