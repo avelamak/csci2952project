@@ -20,7 +20,25 @@ from eval_utils import custom_collate
 logger = logging.getLogger(__name__)
 
 
-def create_dataloaders(args):
+def custom_collate(batch):
+    """Custom collate function that handles SVGTensor objects"""
+    collated = {}
+
+    # Stack tensors normally
+    collated["commands"] = torch.stack([item["commands"] for item in batch])
+    collated["args"] = torch.stack([item["args"] for item in batch])
+    collated["image"] = torch.stack([item["image"] for item in batch])
+
+    # Keep SVGTensor objects and strings as lists
+    collated["tensors"] = [item["tensors"] for item in batch]
+    collated["uuid"] = [item["uuid"] for item in batch]
+    collated["name"] = [item["name"] for item in batch]
+    collated["source"] = [item["source"] for item in batch]
+
+    return collated
+
+
+def create_dataloaders(args, cfg):
     """Create train and val dataloaders"""
     logger.info("Creating datasets...")
 
@@ -54,7 +72,7 @@ def create_dataloaders(args):
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
@@ -63,7 +81,7 @@ def create_dataloaders(args):
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
@@ -90,9 +108,6 @@ def main():
     parser.add_argument("--temp", type=float, default=0.07, help="CLIP temperature parameter")
 
     # Training args
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
-    parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
@@ -154,7 +169,7 @@ def main():
     cfg.contrastive_logit_scale = args.temp
 
     # Create dataloaders
-    train_loader, val_loader = create_dataloaders(args)
+    train_loader, val_loader = create_dataloaders(args, cfg)
 
     # Create model
     logger.info("Creating model...")
@@ -165,7 +180,7 @@ def main():
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
     # Create optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
     # Create trainer
     trainer = Trainer(
@@ -182,7 +197,7 @@ def main():
         trainer.run(
             train_loader=train_loader,
             val_loader=val_loader,
-            max_epochs=args.epochs,
+            max_epochs=cfg.epochs,
             log_every=args.log_every,
         )
         logger.info(

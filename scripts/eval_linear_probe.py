@@ -9,7 +9,7 @@ Usage:
         --encoder-type jepa \
         --checkpoint checkpoints/jepa/best_model.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv \
-        --epochs 10 --lr 1e-3
+        --epochs 10 --lr 1e-3 --task family_label
 
     # Or with autoencoder:
     python scripts/eval_linear_probe.py \
@@ -46,11 +46,12 @@ class FrozenEncoderLinearProbe(nn.Module):
     Uses encode_joint()['svg'] as the latent representation.
     """
 
-    def __init__(self, encoder, num_classes: int, embed_dim: int):
+    def __init__(self, encoder, num_classes: int, embed_dim: int, label: str):
         super().__init__()
         self.encoder = encoder
         self.num_classes = num_classes
         self.classifier = nn.Linear(embed_dim, num_classes)
+        self.label = label
 
     def forward(self, batch):
         device = next(self.classifier.parameters()).device
@@ -65,7 +66,7 @@ class FrozenEncoderLinearProbe(nn.Module):
 
         # Classify
         logits = self.classifier(z)
-        labels = batch_device["label"]
+        labels = batch_device[self.label]
 
         # Filter out samples with invalid labels (-1)
         valid_mask = labels >= 0
@@ -89,7 +90,7 @@ class FrozenEncoderLinearProbe(nn.Module):
 
 
 @torch.no_grad()
-def evaluate(model, loader, accelerator):
+def evaluate(model, loader, label, accelerator):
     """Evaluate model accuracy on a dataset."""
     model.eval()
     correct = 0
@@ -106,8 +107,7 @@ def evaluate(model, loader, accelerator):
         joint = unwrapped.encoder.encode_joint(batch_device)
         z = joint["svg"]
         logits = unwrapped.classifier(z)
-        labels = batch_device["label"]
-
+        labels = batch_device[label]
         # Filter valid labels
         valid_mask = labels >= 0
         if valid_mask.any():
@@ -142,6 +142,12 @@ def main():
     parser.add_argument("--epochs", type=int, default=10, help="Training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--log-every", type=int, default=50, help="Log every N steps")
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="glyph_label",
+        help="Training task to predict: glyph_label for glyph label and family_label for family label",
+    )
 
     # Output args
     parser.add_argument("--tb-dir", type=str, default=None, help="TensorBoard directory")
@@ -159,6 +165,7 @@ def main():
 
     # Load frozen encoder
     encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type)
+    cfg.training_task = args.task
 
     # Determine embedding dimension
     if args.encoder_type == "jepa":
@@ -195,31 +202,37 @@ def main():
 
     # Determine number of classes from dataset
     labels_in_dataset = set()
-    #for batch in train_loader:
-    #    for lbl in batch["label"].tolist():
-     #       if lbl >= 0:
-    #            labels_in_dataset.add(lbl)
-    #num_classes = max(labels_in_dataset) + 1 if labels_in_dataset else 62
-    num_classes = 62
+    label = cfg.training_task
+    for batch in train_loader:
+        for lbl in batch[label].tolist():
+            if lbl >= 0:
+                labels_in_dataset.add(lbl)
+    num_classes = max(labels_in_dataset) + 1 if labels_in_dataset else 62
 
+    logger.info(f"Training task: {label}")
     logger.info(f"Number of classes: {num_classes}")
     logger.info(f"Embedding dimension: {embed_dim}")
 
     # Create probe model
-    model = FrozenEncoderLinearProbe(encoder, num_classes, embed_dim)
+    model = FrozenEncoderLinearProbe(encoder, num_classes, embed_dim, label)
 
     # Only train the classifier
     optimizer = torch.optim.Adam(model.classifier.parameters(), lr=args.lr)
 
-    # Setup trainer config
-    wandb_config = {
-        "encoder_type": args.encoder_type,
-        "num_classes": num_classes,
-        "embed_dim": embed_dim,
-        "lr": args.lr,
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-    }
+    # Setup trainer
+    wandb_config = (
+        {
+            "encoder_type": args.encoder_type,
+            "num_classes": num_classes,
+            "embed_dim": embed_dim,
+            "lr": args.lr,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "task": label,
+        }
+        if args.wandb_project
+        else None
+    )
 
     trainer = Trainer(
         model=model,
@@ -246,7 +259,7 @@ def main():
     )
 
     # Final evaluation on validation set
-    final_acc = evaluate(trainer.model, val_loader, trainer.accelerator)
+    final_acc = evaluate(trainer.model, val_loader, label, trainer.accelerator)
     logger.info(f"Final accuracy: {final_acc * 100:.2f}%")
 
 
