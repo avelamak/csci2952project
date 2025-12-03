@@ -35,7 +35,6 @@
 
 source .venv/bin/activate
 
-export WANDB_API_KEY=05578ca0e5ad3d2c20ce19436f1b8db1f1f25713
 wandb login
 
 python scripts/train_contrastive.py \
