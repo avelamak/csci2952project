@@ -24,6 +24,10 @@ def custom_collate(batch):
     collated["args"] = torch.stack([item["args"] for item in batch])
     collated["image"] = torch.stack([item["image"] for item in batch])
 
+    # Stack precomputed DINO embeddings if available
+    if "dino_embedding" in batch[0]:
+        collated["dino_embedding"] = torch.stack([item["dino_embedding"] for item in batch])
+
     # Keep SVGTensor objects and strings as lists
     collated["tensors"] = [item["tensors"] for item in batch]
     collated["uuid"] = [item["uuid"] for item in batch]
@@ -47,6 +51,8 @@ def create_dataloaders(args):
         split="train",
         seed=args.seed,
         already_preprocessed=True,
+        use_precomputed_dino=args.use_precomputed_dino,
+        dino_dir=args.dino_dir,
     )
 
     # Validation dataset (10% of data)
@@ -59,6 +65,8 @@ def create_dataloaders(args):
         split="val",
         seed=args.seed,
         already_preprocessed=True,
+        use_precomputed_dino=args.use_precomputed_dino,
+        dino_dir=args.dino_dir,
     )
 
     logger.info(f"  Train samples: {len(train_dataset)}")
@@ -93,6 +101,17 @@ def main():
     parser.add_argument("--svg-dir", type=str, default="svgx_svgs", help="SVG directory")
     parser.add_argument("--img-dir", type=str, default="svgx_imgs", help="Image directory")
     parser.add_argument("--meta", type=str, default="svgx_meta.csv", help="Metadata CSV")
+    parser.add_argument(
+        "--use-precomputed-dino",
+        action="store_true",
+        help="Use precomputed DINO embeddings instead of computing on-the-fly",
+    )
+    parser.add_argument(
+        "--dino-dir",
+        type=str,
+        default=None,
+        help="Directory containing precomputed DINO embeddings (required if --use-precomputed-dino)",
+    )
 
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
@@ -164,6 +183,7 @@ def main():
     cfg.max_seq_len = args.max_seq_len
     cfg.use_resnet = args.use_resnet
     cfg.predictor_type = args.predictor_type
+    cfg.use_precomputed_dino = args.use_precomputed_dino
 
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
@@ -178,10 +198,13 @@ def main():
     logger.info(f"Total parameters svg encoder: [bold]{n_params:,}[/bold]", extra={"markup": True})
     n_params = sum(p.numel() for p in model.predictor.parameters() if p.requires_grad)
     logger.info(f"Total parameters predictor: [bold]{n_params:,}[/bold]", extra={"markup": True})
-    n_params = sum(p.numel() for p in model.image_encoder.parameters() if p.requires_grad)
-    logger.info(
-        f"Total parameters image encoder: [bold]{n_params:,}[/bold]", extra={"markup": True}
-    )
+    if model.image_encoder is not None:
+        n_params = sum(p.numel() for p in model.image_encoder.parameters() if p.requires_grad)
+        logger.info(
+            f"Total parameters image encoder: [bold]{n_params:,}[/bold]", extra={"markup": True}
+        )
+    else:
+        logger.info("Using precomputed DINO embeddings (no image encoder loaded)")
 
     # Create optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -225,6 +248,7 @@ def main():
         "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
         "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
         "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
+        "use_precomputed_dino": cfg.use_precomputed_dino,
         # Training args
         "batch_size": args.batch_size,
         "epochs": args.epochs,
@@ -258,6 +282,7 @@ def main():
             "predictor_mlp_num_layers": cfg.predictor_mlp_num_layers,
             "predictor_mlp_hidden_dim": cfg.predictor_mlp_hidden_dim,
             "predictor_mlp_dropout": cfg.predictor_mlp_dropout,
+            "use_precomputed_dino": cfg.use_precomputed_dino,
             # Training args
             "batch_size": args.batch_size,
             "epochs": args.epochs,

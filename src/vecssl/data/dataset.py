@@ -6,7 +6,7 @@ Currently we have:
 
 """
 
-from typing import Any
+from typing import Any, Optional
 import os
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
@@ -39,6 +39,8 @@ class SVGXDataset(Dataset):
         already_preprocessed: bool = True,
         already_tensor: bool = True,
         cache: bool = False,
+        use_precomputed_dino: bool = False,
+        dino_dir: Optional[str] = None,
     ):
         self.svg_dir = svg_dir
         self.img_dir = img_dir
@@ -46,6 +48,10 @@ class SVGXDataset(Dataset):
         self.already_tensor = already_tensor  # ? maybe add an assert for this?
         self.cache = cache
         self._data_cache = {}
+        self.use_precomputed_dino = use_precomputed_dino
+        self.dino_dir = dino_dir
+        if use_precomputed_dino and dino_dir is None:
+            raise ValueError("dino_dir must be provided when use_precomputed_dino is True")
 
         self.MAX_NUM_GROUPS = max_num_groups
         self.MAX_SEQ_LEN = max_seq_len
@@ -155,6 +161,12 @@ class SVGXDataset(Dataset):
             "family_label": entry.get("family_label", -1),  # -1 for datasets without labels
         }
 
+        # Load precomputed DINO embeddings if enabled
+        if self.use_precomputed_dino:
+            dino_path = os.path.join(self.dino_dir, f"{uuid}.pt")
+            dino_data = torch.load(dino_path)
+            _data["dino_embedding"] = dino_data["dino"]  # Shape: [768]
+
         # Save to cache
         if self.cache:
             self._data_cache[idx] = _data
@@ -168,9 +180,6 @@ class SVGXDataset(Dataset):
         pad_len = max(self.MAX_NUM_GROUPS - len(t_sep), 0)
         t_sep.extend([torch.empty(0, 14)] * pad_len)  # ! `14` hard-coded
         fillings.extend([0] * pad_len)
-        
-        _original = [SVGTensor.from_data(t, PAD_VAL=self.PAD_VAL, filling=f).seq_len for t, f in zip(t_sep, fillings, strict=False)]
-        print(_original) if max(_original) == 0 else ...
 
         t_sep = [
             SVGTensor.from_data(t, PAD_VAL=self.PAD_VAL, filling=f)
