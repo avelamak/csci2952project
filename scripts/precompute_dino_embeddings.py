@@ -1,7 +1,7 @@
 # scripts/precompute_dino_embeddings.py
 
 """
-Precompute DINOv2 embeddings for SVGX images.
+Precompute DINOv2 embeddings for images using Accelerate.
 
 Assumes:
   - `meta` CSV has a "uuid" column
@@ -9,18 +9,19 @@ Assumes:
 
 Output:
   - One .pt file per sample in `output_dir`:
-      {"dino": <embedding: torch.FloatTensor[hidden_dim]>}
+      {"dino": <embedding: torch.FloatTensor[dim]>}
 """
 
 import argparse
 import logging
 from pathlib import Path
 
-import torch
-from torch.utils.data import Dataset, DataLoader
-from PIL import Image
 import pandas as pd
+import torch
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 
+from accelerate import Accelerator
 from vecssl.util import setup_logging, make_progress
 from vecssl.models.model import DINOImageEncoder
 
@@ -53,89 +54,100 @@ class DinoPrecomputeDataset(Dataset):
 
 
 def dino_collate(batch):
-    # Return lists so the HF processor can handle them nicely
+    # Keep as lists so DINOImageEncoder can pass them directly to the HF processor
     images = [b["image"] for b in batch]
     uuids = [b["uuid"] for b in batch]
-    return {"image": images, "uuid": uuids}
+    return {"images": images, "uuids": uuids}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Precompute DINOv2 embeddings with Accelerate")
+
+    parser.add_argument("--img-dir", type=str, required=True, help="Directory with PNG images")
+    parser.add_argument("--meta", type=str, required=True, help="CSV with at least a 'uuid' column")
+    parser.add_argument(
+        "--output-dir", type=str, required=True, help="Where to save .pt embedding files"
+    )
+
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--max-samples", type=int, default=None)
+
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="Accelerate mixed precision mode",
+    )
+
+    return parser.parse_args()
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--img-dir", type=str, required=True, help="Directory with PNGs")
-    parser.add_argument("--meta", type=str, required=True, help="Metadata CSV with 'uuid'")
-    parser.add_argument(
-        "--output-dir", type=str, required=True, help="Directory to save DINO embeddings (*.pt)"
+    args = parse_args()
+    setup_logging()
+
+    accelerator = Accelerator(mixed_precision=args.mixed_precision)
+
+    if accelerator.is_main_process:
+        logger.info("Starting DINO precompute with Accelerate")
+        logger.info(f"Using device: {accelerator.device}")
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    accelerator.wait_for_everyone()
+    output_dir = Path(args.output_dir)  # ensure a Path on all ranks
+
+    dataset = DinoPrecomputeDataset(
+        img_dir=args.img_dir,
+        meta_filepath=args.meta,
+        max_samples=args.max_samples,
     )
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--max-samples", type=int, default=None)
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing .pt files")
-    parser.add_argument(
-        "--l2-normalize",
-        action="store_true",
-        help="Store L2-normalized DINO embeddings (recommended for distillation)",
-    )
-    parser.add_argument("--log-level", type=str, default="INFO")
 
-    args = parser.parse_args()
-
-    console = setup_logging(level=args.log_level, reset=True)
-    logger.info("[bold cyan]Precomputing DINO embeddings...[/bold cyan]", extra={"markup": True})
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    dataset = DinoPrecomputeDataset(args.img_dir, args.meta, max_samples=args.max_samples)
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
-        shuffle=False,
         num_workers=args.num_workers,
+        pin_memory=True,
+        shuffle=False,
         collate_fn=dino_collate,
     )
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    model = DINOImageEncoder().to(device)
+    # Your DINOImageEncoder exactly as defined
+    model = DINOImageEncoder()
     model.eval()
+    model.requires_grad_(False)
 
-    total = len(dataset)
-    logger.info(f"[blue]Dataset size:[/blue] {total}", extra={"markup": True})
+    # Let Accelerate handle device placement + DistributedSampler
+    model, dataloader = accelerator.prepare(model, dataloader)
 
-    from torch.nn.functional import normalize as l2_normalize
+    torch.set_grad_enabled(False)
 
-    progress = make_progress(console)
-    with torch.no_grad(), progress:
-        task = progress.add_task("DINO embeddings", total=total)
+    progress = make_progress()
+    with progress:
+        task = progress.add_task("dino", total=len(dataloader))
 
-        processed = 0
         for batch in dataloader:
-            images = batch["image"]
-            uuids = batch["uuid"]
+            images = batch["images"]  # list[PIL.Image]
+            uuids = batch["uuids"]  # list[str]
 
-            # Forward through DINOImageEncoder
-            embeddings = model(images)  # shape: [B, hidden_dim]
-            if args.l2_normalize:
-                embeddings = l2_normalize(embeddings, dim=-1)
+            # Use accelerator.autocast like in your Trainer
+            with accelerator.autocast():
+                embeddings = model(images)  # (B, dim) tensor on local device
 
-            embeddings = embeddings.cpu()
+            # Move to CPU for saving
+            embeddings = embeddings.detach().cpu()
 
-            for emb, uuid in zip(embeddings, uuids, strict=False):
+            # Each rank writes only its own shard of UUIDs.
+            # DistributedSampler from accelerator.prepare ensures no overlap.
+            for uuid, emb in zip(uuids, embeddings, strict=False):
                 out_path = output_dir / f"{uuid}.pt"
-                if out_path.exists() and not args.overwrite:
-                    # Optionally you could log a "skipping existing" message here
-                    continue
                 torch.save({"dino": emb}, out_path)
 
-            processed += len(uuids)
-            progress.advance(task, len(uuids))
+            progress.advance(task)
 
-    logger.info(
-        f"[bold green]Done![/bold green] Processed approx. {processed}/{total} samples",
-        extra={"markup": True},
-    )
+    accelerator.print("Done precomputing DINO embeddings.")
 
 
 if __name__ == "__main__":
     main()
-
