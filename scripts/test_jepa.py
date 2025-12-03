@@ -17,27 +17,11 @@ from vecssl.data.dataset import SVGXDataset
 from vecssl.models.config import JepaConfig
 from vecssl.models.jepa import Jepa
 from vecssl.trainer import Trainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
+
+from eval_utils import custom_collate
 
 logger = logging.getLogger(__name__)
-
-
-def custom_collate(batch):
-    """Custom collate function that handles SVGTensor objects"""
-    collated = {}
-
-    # Stack tensors normally
-    collated["commands"] = torch.stack([item["commands"] for item in batch])
-    collated["args"] = torch.stack([item["args"] for item in batch])
-    collated["image"] = torch.stack([item["image"] for item in batch])
-
-    # Keep SVGTensor objects and strings as lists
-    collated["tensors"] = [item["tensors"] for item in batch]
-    collated["uuid"] = [item["uuid"] for item in batch]
-    collated["name"] = [item["name"] for item in batch]
-    collated["source"] = [item["source"] for item in batch]
-
-    return collated
 
 
 class SimpleJEPA(nn.Module):
@@ -129,12 +113,62 @@ class DebugTrainer(Trainer):
         self.check_gradients = check_gradients
         self.first_step_done = False
 
-    def run(self, train_loader, val_loader=None, max_epochs=10, log_every=50):
-        device = self.device
-        self.model.to(device)
-        scaler = torch.amp.grad_scaler.GradScaler(enabled=self.amp)
+    def _check_gradients_once(self):
+        """Check gradient flow through the model (only on first step)"""
+        if not self.check_gradients or self.first_step_done:
+            return
 
+        if not self.accelerator.is_main_process:
+            self.first_step_done = True
+            return
+
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+
+        logger.info(
+            "[bold yellow]Debug: Gradient flow check[/bold yellow]",
+            extra={"markup": True},
+        )
+        grad_info, grad_summary = unwrapped_model.check_gradients()
+
+        logger.info(
+            f"  Total params: [bold]{grad_summary['total_params']}[/bold]",
+            extra={"markup": True},
+        )
+        logger.info(
+            f"  Params with grad: [bold]{grad_summary['params_with_grad']}[/bold] "
+            f"({grad_summary['gradient_flow_percentage']:.1f}%)",
+            extra={"markup": True},
+        )
+        logger.info(f"  Max grad norm: {grad_summary['max_grad_norm']:.6f}")
+        logger.info(f"  Min grad norm: {grad_summary['min_grad_norm']:.6f}")
+
+        # Show first few and last few layers
+        logger.info("  Sample gradient norms:")
+        for name, info in list(grad_info.items())[:5]:
+            if info["has_grad"]:
+                logger.info(f"    {name}: {info['grad_norm']:.6f}")
+        logger.info("    ...")
+        for name, info in list(grad_info.items())[-5:]:
+            if info["has_grad"]:
+                logger.info(f"    {name}: {info['grad_norm']:.6f}")
+
+        self.first_step_done = True
+
+    def run(self, train_loader, val_loader=None, max_epochs=10, log_every=50):
         from vecssl.util import make_progress
+
+        # Prepare model, optimizer, and dataloaders
+        if val_loader is not None:
+            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader, val_loader
+            )
+        else:
+            self.model, self.optimizer, train_loader = self.accelerator.prepare(
+                self._model, self._optimizer, train_loader
+            )
+
+        if self._scheduler is not None:
+            self.scheduler = self.accelerator.prepare(self._scheduler)
 
         progress = make_progress()
         with progress:
@@ -142,66 +176,47 @@ class DebugTrainer(Trainer):
             for ep in range(max_epochs):
                 self.model.train()
                 batch_task = progress.add_task("train", total=len(train_loader))
-                run = 0.0
+                run_loss = 0.0
+
                 for i, batch in enumerate(train_loader):
-                    with torch.amp.autocast_mode.autocast(device.type):
+                    with self.accelerator.autocast():
                         step = self.model(batch)
                         loss = step.loss
-                    scaler.scale(loss).backward()
+
+                    self.accelerator.backward(loss)
 
                     # Check gradients on first step
-                    if self.check_gradients and not self.first_step_done:
-                        logger.info(
-                            "[bold yellow]Debug: Gradient flow check[/bold yellow]",
-                            extra={"markup": True},
-                        )
-                        grad_info, grad_summary = self.model.check_gradients()
-
-                        logger.info(
-                            f"  Total params: [bold]{grad_summary['total_params']}[/bold]",
-                            extra={"markup": True},
-                        )
-                        logger.info(
-                            f"  Params with grad: [bold]{grad_summary['params_with_grad']}[/bold] "
-                            f"({grad_summary['gradient_flow_percentage']:.1f}%)",
-                            extra={"markup": True},
-                        )
-                        logger.info(f"  Max grad norm: {grad_summary['max_grad_norm']:.6f}")
-                        logger.info(f"  Min grad norm: {grad_summary['min_grad_norm']:.6f}")
-
-                        # Show first few and last few layers
-                        logger.info("  Sample gradient norms:")
-                        shown = 0
-                        for name, info in list(grad_info.items())[:5]:
-                            if info["has_grad"]:
-                                logger.info(f"    {name}: {info['grad_norm']:.6f}")
-                                shown += 1
-                        logger.info("    ...")
-                        for name, info in list(grad_info.items())[-5:]:
-                            if info["has_grad"]:
-                                logger.info(f"    {name}: {info['grad_norm']:.6f}")
-
-                        self.first_step_done = True
+                    self._check_gradients_once()
 
                     if self.grad_clip:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-                    scaler.step(self.optimizer)
-                    scaler.update()
+                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+
+                    self.optimizer.step()
                     self.optimizer.zero_grad()
+
                     if self.scheduler:
                         self.scheduler.step()
-                    run += float(loss.detach())
-                    if self.tb and i % log_every == 0:
-                        self.tb.add_scalar("train/loss", run / (i + 1), ep * len(train_loader) + i)
+
+                    run_loss += float(loss.detach())
+                    global_step = ep * len(train_loader) + i
+
+                    if self.accelerator.is_main_process and i % log_every == 0:
+                        log_dict = {"train/loss": run_loss / (i + 1), "epoch": ep}
                         if step.logs:
                             for k, v in step.logs.items():
-                                self.tb.add_scalar(f"train/{k}", v, ep * len(train_loader) + i)
+                                log_dict[f"train/{k}"] = v
+                        self.accelerator.log(log_dict, step=global_step)
+
                     progress.advance(batch_task)
+
                 progress.advance(epoch_task)
-                logger.info(f"epoch {ep + 1}/{max_epochs} done")
+                if self.accelerator.is_main_process:
+                    logger.info(f"epoch {ep + 1}/{max_epochs} done")
 
                 if val_loader:
                     self.validate(val_loader, ep)
+
+        self.accelerator.end_training()
 
 
 def create_dataloaders(args):
@@ -215,18 +230,20 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.8,
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
-    # Validation dataset (20% of data)
+    # Validation dataset (10% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.2,
+        split="val",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
@@ -275,15 +292,25 @@ def main():
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="Mixed precision mode",
+    )
     parser.add_argument("--tb-dir", type=str, default="runs/test_jepa", help="TensorBoard dir")
 
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     args = parser.parse_args()
+
+    # Set random seed for reproducibility
+    set_seed(args.seed)
 
     setup_logging(
         level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True
@@ -312,16 +339,12 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     # Create trainer
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
-
     trainer = DebugTrainer(
         model=model,
         optimizer=optimizer,
-        device=device,
         grad_clip=args.grad_clip,
+        mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=False,  # Disable AMP for debugging
         check_gradients=args.debug,
     )
 

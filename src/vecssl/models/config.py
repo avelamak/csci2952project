@@ -53,6 +53,10 @@ class _DefaultConfig:
 
         self.num_groups_proposal = self.max_num_groups  # Number of predicted paths, default: N_P
 
+        self.lr = 1e-4
+        self.batch_size = 64
+        self.epochs = 100
+
     def get_model_args(self):
         model_args = []
 
@@ -159,3 +163,6 @@ class JepaConfig(_DefaultConfig):
         self.predictor_mlp_num_layers = 2
         self.predictor_mlp_hidden_dim = 768
         self.predictor_mlp_dropout = 0.1
+
+        # Precomputed DINO embeddings support
+        self.use_precomputed_dino = False

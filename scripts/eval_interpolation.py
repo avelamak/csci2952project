@@ -191,14 +191,15 @@ def main():
     # Load model
     model, cfg = load_autoencoder(Path(args.ae_ckpt), device)
 
-    # Load dataset
+    # Load dataset using test split for proper evaluation
     dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=1.0,
+        split="test",
+        seed=42,
         already_preprocessed=True,
     )
 

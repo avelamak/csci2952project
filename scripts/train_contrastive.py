@@ -14,31 +14,14 @@ from vecssl.data.dataset import SVGXDataset
 from vecssl.models.contrastive import ContrastiveModel
 from vecssl.models.config import ContrastiveConfig
 from vecssl.trainer import Trainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
+from eval_utils import custom_collate
 
 logging.getLogger("PIL").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def custom_collate(batch):
-    """Custom collate function that handles SVGTensor objects"""
-    collated = {}
-
-    # Stack tensors normally
-    collated["commands"] = torch.stack([item["commands"] for item in batch])
-    collated["args"] = torch.stack([item["args"] for item in batch])
-    collated["image"] = torch.stack([item["image"] for item in batch])
-
-    # Keep SVGTensor objects and strings as lists
-    collated["tensors"] = [item["tensors"] for item in batch]
-    collated["uuid"] = [item["uuid"] for item in batch]
-    collated["name"] = [item["name"] for item in batch]
-    collated["source"] = [item["source"] for item in batch]
-
-    return collated
-
-
-def create_dataloaders(args):
+def create_dataloaders(args, cfg):
     """Create train and val dataloaders"""
     logger.info("Creating datasets...")
 
@@ -49,18 +32,20 @@ def create_dataloaders(args):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.8,
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
-    # Validation dataset (20% of data)
+    # Validation dataset (10% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.2,
+        split="val",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
@@ -70,7 +55,7 @@ def create_dataloaders(args):
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
@@ -79,7 +64,7 @@ def create_dataloaders(args):
 
     val_loader = DataLoader(
         val_dataset,
-        batch_size=args.batch_size,
+        batch_size=cfg.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
@@ -106,13 +91,16 @@ def main():
     )
 
     # Training args
-    parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
-    parser.add_argument("--epochs", type=int, default=2, help="Number of epochs")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="Mixed precision mode",
+    )
     parser.add_argument(
         "--tb-dir", type=str, default="runs/test_contrastive", help="TensorBoard dir"
     )
@@ -121,6 +109,7 @@ def main():
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Wandb args
     parser.add_argument(
@@ -142,6 +131,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Set random seed for reproducibility
+    set_seed(args.seed)
+
+    # Setup logging with Rich formatting
     setup_logging(
         level=args.log_level,
         log_file=args.log_file,
@@ -161,7 +154,7 @@ def main():
     cfg.contrastive_logit_scale = args.temp
 
     # Create dataloaders
-    train_loader, val_loader = create_dataloaders(args)
+    train_loader, val_loader = create_dataloaders(args, cfg)
 
     # Create model
     logger.info("Creating model...")
@@ -172,7 +165,7 @@ def main():
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
     # Create optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
     # Create trainer
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -225,10 +218,9 @@ def main():
         model=model,
         optimizer=optimizer,
         checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
-        device=device,
         grad_clip=args.grad_clip,
+        mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=True,
         wandb_project=args.wandb_project,
         cfg=wandb_config,
     )
@@ -239,7 +231,7 @@ def main():
         trainer.run(
             train_loader=train_loader,
             val_loader=val_loader,
-            max_epochs=args.epochs,
+            max_epochs=cfg.epochs,
             log_every=args.log_every,
             save_every=args.save_every,
             start_epoch=start_epoch,

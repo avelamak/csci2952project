@@ -46,12 +46,12 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def load_jepa_checkpoint(jepa_ckpt_path: Path, device: torch.device) -> tuple[Jepa, JepaConfig]:
+def load_jepa_checkpoint(jepa_ckpt_path: Path) -> tuple[Jepa, JepaConfig]:
     """
     Load JEPA checkpoint and return (model, config).
     """
     logger.info(f"Loading JEPA checkpoint from: {jepa_ckpt_path}")
-    ckpt = torch.load(jepa_ckpt_path, map_location=device)
+    ckpt = torch.load(jepa_ckpt_path, map_location="cpu", weights_only=False)
 
     cfg_obj = ckpt.get("cfg")
     if cfg_obj is None:
@@ -209,7 +209,7 @@ def create_dataloaders(args):
         shuffle=True,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=False,  # Drop incomplete batches
+        drop_last=True,  # Drop incomplete batches for consistent batch sizes
     )
 
     val_loader = DataLoader(
@@ -224,9 +224,7 @@ def create_dataloaders(args):
     return train_loader, val_loader
 
 
-def build_wandb_config(
-    cfg: _DefaultConfig, args, device: torch.device, total: int, trainable: int, frozen: int
-):
+def build_wandb_config(cfg: _DefaultConfig, args, total: int, trainable: int, frozen: int):
     return {
         # Model config
         "max_num_groups": cfg.max_num_groups,
@@ -246,7 +244,7 @@ def build_wandb_config(
         "epochs": args.epochs,
         "lr": args.lr,
         "grad_clip": args.grad_clip,
-        "device": str(device),
+        "mixed_precision": args.mixed_precision,
         "n_params_total": total,
         "n_params_trainable": trainable,
         "n_params_frozen": frozen,
@@ -289,6 +287,13 @@ def main() -> None:
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=100, help="Log every N steps")
     parser.add_argument("--save-every", type=int, default=5, help="Save checkpoint every N epochs")
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="fp16",
+        choices=["no", "fp16", "bf16"],
+        help="Mixed precision mode",
+    )
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
@@ -306,6 +311,8 @@ def main() -> None:
     # Logging args
     parser.add_argument("--tb-dir", type=str, default=None, help="TensorBoard directory")
     parser.add_argument("--wandb-project", type=str, default=None, help="Wandb project name")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="Wandb entity/team")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file")
     parser.add_argument(
@@ -330,13 +337,8 @@ def main() -> None:
     logger.info("JEPA Decoder Training")
     logger.info("=" * 60)
 
-    # Device
-    device_str = args.device if torch.cuda.is_available() else "cpu"
-    device = torch.device(device_str)
-    logger.info("Using device: %s", device)
-
     # 1. Load JEPA checkpoint
-    jepa, jepa_cfg = load_jepa_checkpoint(Path(args.jepa_checkpoint), device)
+    jepa, jepa_cfg = load_jepa_checkpoint(Path(args.jepa_checkpoint))
 
     # 2. Override config values if specified
     if args.max_num_groups is not None:
@@ -360,7 +362,6 @@ def main() -> None:
 
     # 6. Freeze encoder
     freeze_encoder(model)
-    model.to(device)
 
     # Free JEPA memory
     del jepa
@@ -394,7 +395,6 @@ def main() -> None:
             model=model,
             optimizer=optimizer,
             scheduler=None,
-            device=device,
         )
         start_epoch = metadata["epoch"] + 1
         logger.info("Resuming training from epoch %d", start_epoch)
@@ -402,7 +402,7 @@ def main() -> None:
     # Prepare wandb config
     wandb_config = None
     if args.wandb_project:
-        wandb_config = build_wandb_config(cfg, args, device, total, trainable, frozen)
+        wandb_config = build_wandb_config(cfg, args, total, trainable, frozen)
         logger.info("Wandb enabled - project: %s", args.wandb_project)
 
     # Checkpoint directory
@@ -413,11 +413,12 @@ def main() -> None:
         model=model,
         optimizer=optimizer,
         checkpoint_dir=checkpoint_dir,
-        device=device,
         grad_clip=args.grad_clip,
+        mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=True,  # AMP for faster training
         wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
         cfg=wandb_config,
     )
 
