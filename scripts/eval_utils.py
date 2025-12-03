@@ -36,7 +36,7 @@ def custom_collate(batch):
         "uuid": [item["uuid"] for item in batch],
         "name": [item["name"] for item in batch],
         "source": [item["source"] for item in batch],
-        "label": torch.tensor([item["label"] for item in batch], dtype=torch.long),
+        "glyph_label": torch.tensor([item["label"] for item in batch], dtype=torch.long),
         "family_label": torch.tensor([item["family_label"] for item in batch], dtype=torch.long),
     }
 
