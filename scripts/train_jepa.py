@@ -265,7 +265,7 @@ def main():
             "grad_clip": args.grad_clip,
             "num_workers": args.num_workers,
             "log_every": args.log_every,
-            "device": str(device),
+            "device": "cuda" if torch.cuda.is_available() else "cpu",
             "amp": True,
             "n_params": n_params,
             "model_name": "jepa",

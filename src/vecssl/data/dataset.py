@@ -168,6 +168,9 @@ class SVGXDataset(Dataset):
         pad_len = max(self.MAX_NUM_GROUPS - len(t_sep), 0)
         t_sep.extend([torch.empty(0, 14)] * pad_len)  # ! `14` hard-coded
         fillings.extend([0] * pad_len)
+        
+        _original = [SVGTensor.from_data(t, PAD_VAL=self.PAD_VAL, filling=f).seq_len for t, f in zip(t_sep, fillings, strict=False)]
+        print(_original) if max(_original) == 0 else ...
 
         t_sep = [
             SVGTensor.from_data(t, PAD_VAL=self.PAD_VAL, filling=f)
