@@ -195,11 +195,12 @@ def main():
 
     # Determine number of classes from dataset
     labels_in_dataset = set()
-    for batch in train_loader:
-        for lbl in batch["label"].tolist():
-            if lbl >= 0:
-                labels_in_dataset.add(lbl)
-    num_classes = max(labels_in_dataset) + 1 if labels_in_dataset else 62
+    #for batch in train_loader:
+    #    for lbl in batch["label"].tolist():
+     #       if lbl >= 0:
+    #            labels_in_dataset.add(lbl)
+    #num_classes = max(labels_in_dataset) + 1 if labels_in_dataset else 62
+    num_classes = 62
 
     logger.info(f"Number of classes: {num_classes}")
     logger.info(f"Embedding dimension: {embed_dim}")

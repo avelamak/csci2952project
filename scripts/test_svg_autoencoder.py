@@ -498,7 +498,7 @@ def main():
 
     # Create model
     logger.info("Creating model...")
-    model = SimpleSVGAutoencoder(cfg, debug_mode=args.debug)
+    model = SimpleSVGAutoencoder(cfg)
 
     # Count parameters
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
