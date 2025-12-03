@@ -53,6 +53,10 @@ class _DefaultConfig:
 
         self.num_groups_proposal = self.max_num_groups  # Number of predicted paths, default: N_P
 
+        self.lr = 1e-4
+        self.batch_size = 64
+        self.epochs = 100
+
     def get_model_args(self):
         model_args = []
 
