@@ -87,6 +87,67 @@ def decode_svg_from_cmd_args(
     return svg
 
 
+def visualize_batch(model, batch, epoch, out_dir="debug_svgs"):
+    """
+    Save GT and predicted SVGs for visualization.
+
+    Args:
+        model: The SVG autoencoder model (unwrapped)
+        batch: A batch dict with 'commands' and 'args' tensors
+        epoch: Current epoch number (for filename)
+        out_dir: Output directory for SVG files
+    """
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    device = next(model.parameters()).device
+
+    b = 0  # first sample in batch
+
+    # Get GT from batch (skip SOS at position 0)
+    gt_commands = batch["commands"][b, :, 1:]  # [G, S-1]
+    gt_args = batch["args"][b, :, 1:]  # [G, S-1, n_args]
+
+    try:
+        gt_svg = decode_svg_from_cmd_args(gt_commands, gt_args)
+        gt_path = Path(out_dir) / f"ep{epoch:03d}_gt.svg"
+        gt_svg.save_svg(str(gt_path))
+        logger.info(f"[viz] Saved GT to {gt_path}")
+    except Exception as e:
+        logger.warning(f"[viz] Failed to save GT SVG: {e}")
+
+    # Generate prediction via greedy sampling
+    enc_commands = batch["commands"][b : b + 1].to(device)
+    enc_args = batch["args"][b : b + 1].to(device)
+
+    with torch.no_grad():
+        commands_y, args_y = model.model.greedy_sample(
+            commands_enc=enc_commands,
+            args_enc=enc_args,
+            commands_dec=None,
+            args_dec=None,
+            label=None,
+            z=None,
+            hierarch_logits=None,
+            concat_groups=True,
+            temperature=0.0001,
+        )
+
+    # Log first few predicted commands
+    cmd_names = SVGTensor.COMMANDS_SIMPLIFIED
+    first_seq = commands_y[0].cpu().tolist()
+    decoded_cmds = [
+        cmd_names[int(c)] if 0 <= int(c) < len(cmd_names) else f"?{c}" for c in first_seq[:10]
+    ]
+    logger.info(f"[viz] Pred cmds (first 10): {decoded_cmds}")
+
+    try:
+        pred_svg = decode_svg_from_cmd_args(commands_y[0].cpu(), args_y[0].cpu().float())
+        pred_path = Path(out_dir) / f"ep{epoch:03d}_pred.svg"
+        pred_svg.save_svg(str(pred_path))
+        logger.info(f"[viz] Saved pred to {pred_path}")
+    except Exception as e:
+        logger.warning(f"[viz] Failed to save pred SVG: {e}")
+
+
 def custom_collate(batch):
     """Custom collate function that handles SVGTensor objects"""
     collated = {}
@@ -294,243 +355,6 @@ class SimpleSVGAutoencoder(nn.Module):
         return gradient_info, summary
 
 
-class DebugTrainer(Trainer):
-    """Extended trainer with gradient checking and visualization"""
-
-    def __init__(self, *args, check_gradients=False, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.check_gradients = check_gradients
-        self.first_step_done = False
-
-    def _maybe_visualize_batch(self, batch, step, ep, i, out_dir="debug_svgs"):
-        """Save GT and predicted SVGs for visualization."""
-        if i != 0 or not self.accelerator.is_main_process:
-            return
-
-        logger.info(f"[viz] Attempting visualization for epoch {ep}")
-
-        Path(out_dir).mkdir(parents=True, exist_ok=True)
-
-        # ---------------- GT SVG ----------------
-        output = step.extras.get("output", None)
-        if output is None:
-            logger.warning("[viz] No output in step.extras")
-            return
-
-        tgt_commands = output.get("tgt_commands")  # [B, G, S]
-        tgt_args = output.get("tgt_args")  # [B, G, S, n_args]
-
-        if tgt_commands is None or tgt_args is None:
-            logger.warning("[viz] Missing tgt_commands or tgt_args")
-            return
-
-        b = 0  # first sample in batch
-
-        # Skip SOS at position 0
-        gt_cmd = tgt_commands[b, :, 1:]  # [G, S-1]
-        gt_args = tgt_args[b, :, 1:]  # [G, S-1, n_args]
-
-        try:
-            gt_svg = decode_svg_from_cmd_args(gt_cmd, gt_args)
-            gt_path = Path(out_dir) / f"ep{ep:03d}_gt.svg"
-            gt_svg.save_svg(str(gt_path))
-        except Exception as e:
-            logger.warning(f"[viz] Failed to save GT SVG: {e}")
-
-        # ---------------- Predicted SVG (via greedy_sample) ----------------
-        # Get the unwrapped model for greedy_sample
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
-        device = next(unwrapped_model.parameters()).device
-
-        # Explicitly move tensors to model device for multi-GPU safety
-        enc_commands = batch["commands"][b : b + 1].to(device, non_blocking=True)  # [1, G, S]
-        enc_args = batch["args"][b : b + 1].to(device, non_blocking=True)  # [1, G, S, n_args]
-
-        with torch.no_grad():
-            # Use the SVGTransformer's own sampling logic
-            commands_y, args_y = unwrapped_model.model.greedy_sample(
-                commands_enc=enc_commands,
-                args_enc=enc_args,
-                commands_dec=None,
-                args_dec=None,
-                label=None,
-                z=None,
-                hierarch_logits=None,
-                concat_groups=True,  # flatten groups into one sequence
-                temperature=0.0001,
-            )
-
-        # commands_y: [N, S'], args_y: [N, S', n_args], with N=1 here
-        cmd_names = SVGTensor.COMMANDS_SIMPLIFIED
-        first_seq = commands_y[0].cpu().tolist()
-        decoded_cmds = [
-            cmd_names[int(c)] if 0 <= int(c) < len(cmd_names) else f"?{c}" for c in first_seq[:10]
-        ]
-        logger.info(f"[viz] Pred cmds (first 10 via greedy_sample): {decoded_cmds}")
-
-        try:
-            pred_svg = decode_svg_from_cmd_args(
-                commands_y[0].cpu(),
-                args_y[0].cpu().float(),
-            )
-            pred_path = Path(out_dir) / f"ep{ep:03d}_pred.svg"
-            pred_svg.save_svg(str(pred_path))
-            logger.info(f"[viz] Saved SVGs to {out_dir}/ep{ep:03d}_*.svg")
-        except Exception as e:
-            logger.warning(f"[viz] Failed to save pred SVG: {e}")
-
-    def _check_gradients_once(self):
-        """Check gradient flow through the model (only on first step)"""
-        if not self.check_gradients or self.first_step_done:
-            return
-
-        if not self.accelerator.is_main_process:
-            self.first_step_done = True
-            return
-
-        # Get unwrapped model for gradient checking
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
-
-        logger.info(
-            "[bold yellow]Debug: Gradient flow check[/bold yellow]",
-            extra={"markup": True},
-        )
-        grad_info, grad_summary = unwrapped_model.check_gradients()
-
-        logger.info(
-            f"  Total params: [bold]{grad_summary['total_params']}[/bold]",
-            extra={"markup": True},
-        )
-        logger.info(
-            f"  Params with grad: [bold]{grad_summary['params_with_grad']}[/bold] "
-            f"({grad_summary['gradient_flow_percentage']:.1f}%)",
-            extra={"markup": True},
-        )
-        logger.info(f"  Max grad norm: {grad_summary['max_grad_norm']:.6f}")
-        logger.info(f"  Min grad norm: {grad_summary['min_grad_norm']:.6f}")
-
-        # Show first few and last few layers
-        logger.info("  Sample gradient norms:")
-        for name, info in list(grad_info.items())[:5]:
-            if info["has_grad"]:
-                logger.info(f"    {name}: {info['grad_norm']:.6f}")
-        logger.info("    ...")
-        for name, info in list(grad_info.items())[-5:]:
-            if info["has_grad"]:
-                logger.info(f"    {name}: {info['grad_norm']:.6f}")
-
-        self.first_step_done = True
-
-    def run(
-        self,
-        train_loader,
-        val_loader=None,
-        max_epochs=10,
-        log_every=50,
-        save_every=1,
-        start_epoch=0,
-    ):
-        from vecssl.util import make_progress
-
-        # Prepare model, optimizer, and dataloaders (including val_loader if present)
-        if val_loader is not None:
-            self.model, self.optimizer, train_loader, val_loader = self.accelerator.prepare(
-                self._model, self._optimizer, train_loader, val_loader
-            )
-        else:
-            self.model, self.optimizer, train_loader = self.accelerator.prepare(
-                self._model, self._optimizer, train_loader
-            )
-
-        if self._scheduler is not None:
-            self.scheduler = self.accelerator.prepare(self._scheduler)
-
-        # Initialize trackers (wandb/tensorboard)
-        if self.accelerator.is_main_process:
-            tracker_config = self.cfg if isinstance(self.cfg, dict) else {}
-            init_kwargs = {}
-            if self.wandb_project:
-                init_kwargs["wandb"] = {"name": self.wandb_project}
-
-            self.accelerator.init_trackers(
-                project_name=self.wandb_project or "training",
-                config=tracker_config,
-                init_kwargs=init_kwargs if init_kwargs else None,
-            )
-
-        # Ensure all processes ready before training loop
-        self.accelerator.wait_for_everyone()
-
-        progress = make_progress()
-        with progress:
-            epoch_task = progress.add_task("epoch", total=max_epochs - start_epoch)
-            for ep in range(start_epoch, max_epochs):
-                self.model.train()
-                batch_task = progress.add_task("train", total=len(train_loader))
-                run_loss = 0.0
-
-                for i, batch in enumerate(train_loader):
-                    # Forward pass (autocast handled by accelerator)
-                    with self.accelerator.autocast():
-                        step = self.model(batch)
-                        loss = step.loss
-
-                    # Visualize once per epoch (first batch)
-                    self._maybe_visualize_batch(batch, step, ep, i)
-
-                    # Backward pass
-                    self.accelerator.backward(loss)
-
-                    # Check gradients on first step (after backward)
-                    self._check_gradients_once()
-
-                    # Gradient clipping
-                    if self.grad_clip:
-                        self.accelerator.clip_grad_norm_(self.model.parameters(), self.grad_clip)
-
-                    # Optimizer step
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
-
-                    # Scheduler step
-                    if self.scheduler:
-                        self.scheduler.step()
-
-                    run_loss += float(loss.detach())
-                    global_step = ep * len(train_loader) + i
-
-                    # Logging (main process only)
-                    if self.accelerator.is_main_process and i % log_every == 0:
-                        log_dict = {
-                            "train/loss": run_loss / (i + 1),
-                            "epoch": ep,
-                        }
-                        if step.logs:
-                            for k, v in step.logs.items():
-                                log_dict[f"train/{k}"] = v
-                        self.accelerator.log(log_dict, step=global_step)
-
-                    progress.advance(batch_task)
-
-                progress.advance(epoch_task)
-
-                if self.accelerator.is_main_process:
-                    logger.info(f"epoch {ep + 1}/{max_epochs} done")
-
-                # Checkpointing
-                if self.checkpoint_dir and ep % save_every == 0 and ep > 1:
-                    self._save_checkpoint(ep)
-
-                # Validation:all ranks participate, validate handles gathering
-                if val_loader and ep % 10 == 0 and ep > 1:
-                    self.validate(val_loader, ep)
-                self.accelerator.wait_for_everyone()
-
-        # End training (cleanup trackers)
-        self.accelerator.wait_for_everyone()
-        self.accelerator.end_training()
-
-
 def create_dataloaders(args):
     """Create train and val dataloaders"""
     logger.info("Creating datasets...")
@@ -621,9 +445,6 @@ def main():
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file (optional)")
-    parser.add_argument(
-        "--debug", action="store_true", help="Enable debug mode (print shapes & gradients)"
-    )
 
     # Wandb args
     parser.add_argument(
@@ -734,7 +555,7 @@ def main():
         )
 
     # Create trainer
-    trainer = DebugTrainer(
+    trainer = Trainer(
         model=model,
         optimizer=optimizer,
         checkpoint_dir=Path(args.checkpoint_dir) if args.checkpoint_dir else None,
@@ -742,8 +563,9 @@ def main():
         mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
         wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
         cfg=wandb_config,
-        check_gradients=args.debug,
     )
 
     # Run training

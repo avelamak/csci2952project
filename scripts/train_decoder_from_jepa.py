@@ -311,6 +311,8 @@ def main() -> None:
     # Logging args
     parser.add_argument("--tb-dir", type=str, default=None, help="TensorBoard directory")
     parser.add_argument("--wandb-project", type=str, default=None, help="Wandb project name")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="Wandb entity/team")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file")
     parser.add_argument(
@@ -414,10 +416,10 @@ def main() -> None:
         grad_clip=args.grad_clip,
         mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=True,  # AMP for faster training
         wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
         cfg=wandb_config,
-        check_gradients=args.debug,
     )
 
     # 10. Run training

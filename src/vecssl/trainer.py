@@ -23,6 +23,8 @@ class Trainer:
         mixed_precision="no",  # "no", "fp16", or "bf16"
         tb_dir=None,
         wandb_project=None,
+        wandb_name=None,
+        wandb_entity=None,
         cfg=None,
     ) -> None:
         # Store unprepared objects - will be prepared in run()
@@ -34,6 +36,8 @@ class Trainer:
         self.cfg = cfg
         self.tb_dir = tb_dir
         self.wandb_project = wandb_project
+        self.wandb_name = wandb_name
+        self.wandb_entity = wandb_entity
         self.best_val_loss = float("inf")
 
         # Setup logging backends for Accelerator
@@ -95,7 +99,13 @@ class Trainer:
             tracker_config = self.cfg if isinstance(self.cfg, dict) else {}
             init_kwargs = {}
             if self.wandb_project:
-                init_kwargs["wandb"] = {"name": self.wandb_project}
+                wandb_init = {}
+                if self.wandb_name:
+                    wandb_init["name"] = self.wandb_name
+                if self.wandb_entity:
+                    wandb_init["entity"] = self.wandb_entity
+                if wandb_init:
+                    init_kwargs["wandb"] = wandb_init
 
             self.accelerator.init_trackers(
                 project_name=self.wandb_project or "training",

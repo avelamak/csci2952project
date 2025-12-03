@@ -283,6 +283,8 @@ def main():
         mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
         wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
         cfg=wandb_config,
     )
 

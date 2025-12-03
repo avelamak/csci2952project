@@ -146,6 +146,8 @@ def main():
     # Output args
     parser.add_argument("--tb-dir", type=str, default=None, help="TensorBoard directory")
     parser.add_argument("--wandb-project", type=str, default=None, help="Wandb project")
+    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name")
+    parser.add_argument("--wandb-entity", type=str, default=None, help="Wandb entity/team")
     parser.add_argument("--checkpoint-dir", type=str, default=None, help="Save checkpoints")
 
     args = parser.parse_args()
@@ -212,6 +214,8 @@ def main():
         tb_dir=args.tb_dir,
         grad_clip=None,
         wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
         cfg=wandb_config,
     )
 
