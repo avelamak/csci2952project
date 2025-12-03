@@ -162,3 +162,6 @@ class JepaConfig(_DefaultConfig):
         self.predictor_mlp_num_layers = 2
         self.predictor_mlp_hidden_dim = 768
         self.predictor_mlp_dropout = 0.1
+
+        # Precomputed DINO embeddings support
+        self.use_precomputed_dino = False

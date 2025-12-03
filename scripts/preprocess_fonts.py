@@ -107,6 +107,11 @@ def preprocess_glyph(svg_path: Path, family_labels: list) -> dict | None:
             "max_len_group": max(len_groups) if len_groups else 0,
         }
 
+        # Skip samples with no valid path data (causes NaN in training)
+        if metadata["nb_groups"] == 0 or metadata["max_len_group"] == 0:
+            logger.debug(f"Skipping {uuid}: no valid path data")
+            return None
+
         # Save preprocessed SVG or tensor
         if _OUT_SVG:
             if not _TO_TENSOR:

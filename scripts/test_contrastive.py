@@ -13,8 +13,9 @@ from vecssl.data.dataset import SVGXDataset
 from vecssl.models.contrastive import ContrastiveModel
 from vecssl.models.config import ContrastiveConfig
 from vecssl.trainer import Trainer
-from vecssl.util import setup_logging
+from vecssl.util import setup_logging, set_seed
 
+from eval_utils import custom_collate
 
 logger = logging.getLogger(__name__)
 
@@ -48,18 +49,20 @@ def create_dataloaders(args, cfg):
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.8,
+        split="train",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
-    # Validation dataset (20% of data)
+    # Validation dataset (10% of data)
     val_dataset = SVGXDataset(
         svg_dir=args.svg_dir,
         img_dir=args.img_dir,
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        train_ratio=0.2,
+        split="val",
+        seed=args.seed,
         already_preprocessed=True,
     )
 
@@ -108,7 +111,13 @@ def main():
     parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
-    parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
+    parser.add_argument(
+        "--mixed-precision",
+        type=str,
+        default="no",
+        choices=["no", "fp16", "bf16"],
+        help="Mixed precision mode",
+    )
     parser.add_argument(
         "--tb-dir", type=str, default="runs/test_contrastive", help="TensorBoard dir"
     )
@@ -119,6 +128,7 @@ def main():
     parser.add_argument(
         "--debug", action="store_true", help="Enable debug mode (print shapes & gradients)"
     )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     # Wandb args
     parser.add_argument(
@@ -133,6 +143,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Set random seed for reproducibility
+    set_seed(args.seed)
 
     # Setup logging with Rich formatting
     setup_logging(
@@ -170,16 +183,12 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
     # Create trainer
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
-
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
-        device=device,
         grad_clip=args.grad_clip,
+        mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
-        amp=False,  # Disable AMP for debugging
     )
 
     # Run training

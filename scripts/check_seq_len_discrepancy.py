@@ -2,6 +2,7 @@
 Check discrepancy between metadata max_len_group and actual tensor length.
 """
 
+import csv
 import logging
 from argparse import ArgumentParser
 from pathlib import Path
@@ -16,8 +17,23 @@ from vecssl.util import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def check_svg(svg_path: Path, verbose: bool = False):
+def load_metadata(meta_path: Path) -> dict:
+    """Load metadata CSV into a dict keyed by uuid."""
+    metadata = {}
+    with open(meta_path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            metadata[row["uuid"]] = {
+                "max_len_group": int(row["max_len_group"]),
+                "nb_groups": int(row["nb_groups"]),
+                "total_len": int(row["total_len"]),
+            }
+    return metadata
+
+
+def check_svg(svg_path: Path, metadata: dict | None = None):
     """Compare preprocessing length vs actual tensor length."""
+    uuid = svg_path.stem
 
     # Check if it's a .pt file (already preprocessed tensor)
     if svg_path.suffix == ".pt":
@@ -40,6 +56,11 @@ def check_svg(svg_path: Path, verbose: bool = False):
         # Method 2: How dataset.py actually loads it
         SVGXDataset.preprocess(svg, augment=False)
         t_sep, fillings = svg.to_tensor(concat_groups=False), svg.to_fillings()
+
+    if metadata and uuid in metadata:
+        assert max_len_preprocess == metadata[uuid]["max_len_group"], (
+            f"{uuid}: {max_len_preprocess} != {metadata[uuid]['max_len_group']}"
+        )
 
     # After add_sos + add_eos + pad (what dataset.py does)
     # Match dataset.py exactly: pad t_sep to MAX_NUM_GROUPS, process ALL including empty
@@ -70,18 +91,25 @@ def check_svg(svg_path: Path, verbose: bool = False):
     # Check if all cmds() have same flattened size (required for torch.stack)
     cmds_mismatch = len(set(cmds_shapes)) > 1 if cmds_shapes else False
 
-    if verbose or discrepancy != 0 or cmds_mismatch:
-        logger.info(f"{svg_path.name}:")
-        logger.info(f"  Preprocess max_len_group: {max_len_preprocess}")
-        logger.info(f"  Expected after SOS/EOS:   {max_len_preprocess + 2}")
-        logger.info(f"  Actual tensor length:     {max_len_actual}")
-        logger.info(f"  Group lengths (preprocess): {len_groups_preprocess}")
-        logger.info(f"  Group lengths (actual):     {actual_lens}")
-        logger.info(f"  cmds() flattened sizes:     {cmds_shapes}")
+    if (
+        (discrepancy != 0 or cmds_mismatch)
+        and MAX_SEQ_LEN >= max_len_preprocess
+        and max_len_actual > 42
+    ):
+        logger.warning(f"{svg_path.name}:")
+        logger.warning(f"  Preprocess max_len_group: {max_len_preprocess}")
+        logger.warning(f"  Expected after SOS/EOS:   {max_len_preprocess + 2}")
+        logger.warning(f"  Actual tensor length:     {max_len_actual}")
+        logger.warning(f"  Group lengths (preprocess): {len_groups_preprocess}")
+        logger.warning(f"  Group lengths (actual):     {actual_lens}")
+        logger.warning(f"  cmds() flattened sizes:     {cmds_shapes}")
         if discrepancy != 0:
             logger.warning(f"  DISCREPANCY: {discrepancy}")
         if cmds_mismatch:
             logger.warning(f"  CMDS MISMATCH: {cmds_shapes}")
+    else:
+        discrepancy = 0
+        cmds_mismatch = False
 
     return {
         "file": svg_path.name,
@@ -100,13 +128,14 @@ def main():
     parser.add_argument("--svg-dir", type=Path, help="Directory of SVGs to check")
     parser.add_argument("--meta", type=Path, help="Metadata CSV to cross-reference")
     parser.add_argument("--max-samples", type=int, default=100)
-    parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
     setup_logging(level="INFO", reset=True)
 
+    metadata = load_metadata(args.meta) if args.meta else None
+
     if args.svg:
-        check_svg(args.svg, verbose=True)
+        check_svg(args.svg, metadata)
     elif args.svg_dir:
         # Find both .svg and .pt files
         svg_files = list(args.svg_dir.glob("*.svg")) + list(args.svg_dir.glob("*.pt"))
@@ -116,7 +145,7 @@ def main():
         results = []
         for svg_path in svg_files:
             try:
-                result = check_svg(svg_path, verbose=args.verbose)
+                result = check_svg(svg_path, metadata)
                 results.append(result)
             except Exception as e:
                 logger.error(f"Error processing {svg_path}: {e}")

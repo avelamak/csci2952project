@@ -46,49 +46,83 @@ def recall_at_k(
     gallery_labels: list,
     ks: tuple = (1, 5, 10),
     exclude_self: bool = False,
+    chunk_size: int = 256,
 ) -> dict:
     """
-    Compute Recall@k for retrieval.
+    Compute Recall@k for retrieval in a memory-efficient way by batching queries.
 
     Args:
         query_embeddings: [N_q, d] normalized query embeddings
         gallery_embeddings: [N_g, d] normalized gallery embeddings
-        query_labels: Labels for queries
-        gallery_labels: Labels for gallery
-        ks: Tuple of k values to compute
-        exclude_self: If True, exclude self-matches (for same-modal)
+        query_labels: list[int] of length N_q
+        gallery_labels: list[int] of length N_g
+        ks: tuple of k values to compute
+        exclude_self: if True and N_q == N_g, exclude self-matches for same-modal retrieval
+        chunk_size: number of queries per similarity batch
 
     Returns:
         dict: {k: recall} for each k
     """
-    # Compute cosine similarity
-    sim = query_embeddings @ gallery_embeddings.t()  # [N_q, N_g]
+    assert query_embeddings.dim() == 2 and gallery_embeddings.dim() == 2
+    assert query_embeddings.size(1) == gallery_embeddings.size(1)
 
-    if exclude_self and query_embeddings.shape[0] == gallery_embeddings.shape[0]:
-        # Exclude diagonal (self-matches)
-        sim.fill_diagonal_(-1e9)
+    device = query_embeddings.device
+    ks = tuple(sorted(ks))
+    k_max = max(ks)
 
-    N = sim.size(0)
-    recalls = dict.fromkeys(ks, 0.0)
+    N_q = query_embeddings.size(0)
+    N_g = gallery_embeddings.size(0)
 
-    for i in range(N):
-        query_label = query_labels[i]
-        if query_label < 0:
-            continue  # Skip invalid labels
+    # Make sure labels are indexable lists
+    query_labels = list(query_labels)
+    gallery_labels = list(gallery_labels)
 
-        # Get top-k indices
-        topk_idx = sim[i].topk(max(ks), dim=0).indices.tolist()
+    # Counters for hits
+    hit_counts = dict.fromkeys(ks, 0.0)
+    valid_count = sum(1 for lbl in query_labels if lbl >= 0)
 
-        for k in ks:
-            # Check if any of top-k has same label
-            retrieved_labels = [gallery_labels[j] for j in topk_idx[:k]]
-            hits = sum(1 for lbl in retrieved_labels if lbl == query_label)
-            recalls[k] += 1.0 if hits > 0 else 0.0
+    # Precompute gallery^T once on the same device as queries
+    gallery_embeddings_t = gallery_embeddings.t()  # [d, N_g]
+
+    for start in range(0, N_q, chunk_size):
+        end = min(start + chunk_size, N_q)
+        bsz = end - start
+
+        # [B, d]
+        q_chunk = query_embeddings[start:end]
+
+        # [B, N_g] cosine similarity
+        sim_chunk = q_chunk @ gallery_embeddings_t
+
+        # For same-modal retrieval, exclude diagonal self-matches
+        if exclude_self and N_q == N_g:
+            row_idx = torch.arange(bsz, device=device)
+            col_idx = torch.arange(start, end, device=device)
+            sim_chunk[row_idx, col_idx] = -1e9  # large negative so never in top-k
+
+        # Top-k over the gallery for each query in the chunk
+        topk_idx = sim_chunk.topk(k_max, dim=1).indices.cpu().tolist()
+
+        # Update recall counts
+        for row_offset, idxs in enumerate(topk_idx):
+            q_idx = start + row_offset
+            q_label = query_labels[q_idx]
+            if q_label < 0:
+                continue  # skip invalid labels
+
+            # Convert indices → labels for this query
+            retrieved_labels = [gallery_labels[j] for j in idxs]
+
+            for k in ks:
+                # Hit if any of the top-k has the same label
+                if any(lbl == q_label for lbl in retrieved_labels[:k]):
+                    hit_counts[k] += 1.0
 
     # Normalize
-    valid_count = sum(1 for lbl in query_labels if lbl >= 0)
+    recalls = {}
+    denom = max(1, valid_count)
     for k in ks:
-        recalls[k] /= max(1, valid_count)
+        recalls[k] = hit_counts[k] / denom
 
     return recalls
 
@@ -132,7 +166,7 @@ def main():
     logger.info(f"Using device: {device}")
 
     # Load frozen encoder
-    encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type, device)
+    encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type)
 
     # Create dataloader
     loader = create_eval_dataloader(
