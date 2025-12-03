@@ -273,6 +273,22 @@ class MAEEncoder(nn.Module):
             extra={"markup": True},
         )
 
+        # if self.cfg.encode_stages == 2:
+        #     src = z.transpose(0, 1)
+        #     src = _pack_group_batch(src)
+        #     l = self.label_embedding(label).unsqueeze(0) if self.cfg.label_condition else None
+
+        #     if not self.cfg.self_match:
+        #         src = self.hierarchical_PE(src)
+
+        #     memory = self.hierarchical_encoder(
+        #         src, mask=None, src_key_padding_mask=key_visibility_mask, memory2=l
+        #     )
+        #     z = (memory * visibility_mask).sum(dim=0, keepdim=True) / visibility_mask.sum(
+        #         dim=0, keepdim=True
+        #     )
+        #     z = _unpack_group_batch(N, z)
+
         return z, mask_group_indices
 
 
@@ -598,27 +614,56 @@ class MAEDecoder(nn.Module):
         hidden_cell = hidden.contiguous(), cell.contiguous()
         return hidden_cell
 
-    def forward(self, z, commands, args, label=None, hierarch_logits=None, return_hierarch=False):
+    def forward(
+        self,
+        z,
+        commands,
+        args,
+        logger=None,
+        label=None,
+        hierarch_logits=None,
+        return_hierarch=False,
+    ):
         N = z.size(2)
+        if return_hierarch:
+            logger.info(
+                f"[bold red] we are returning hierarchical logits {z.shape}[/bold red]",
+                extra={"markup": True},
+            )
+
+        logger.info(
+            f"[bold red]latent dim in decoder shape {z.shape}[/bold red]",
+            extra={"markup": True},
+        )
         l = self.label_embedding(label).unsqueeze(0) if self.cfg.label_condition else None
         if hierarch_logits is None:
             z = _pack_group_batch(z)
 
-        if self.cfg.decode_stages == 2:
-            if hierarch_logits is None:
-                src = self.hierarchical_embedding(z)
-                out = self.hierarchical_decoder(
-                    src, z, tgt_mask=None, tgt_key_padding_mask=None, memory2=l
-                )
-                hierarch_logits, z = self.hierarchical_fcn(out)
+        logger.info(
+            f"[bold red]latent dim in decoder after group packing {z.shape}[/bold red]",
+            extra={"markup": True},
+        )
 
-            if self.cfg.label_condition:
-                l = l.unsqueeze(0).repeat(1, z.size(1), 1, 1)
+        # if self.cfg.decode_stages == 2:
+        #     if hierarch_logits is None:
+        #         src = self.hierarchical_embedding(z)
+        #         out = self.hierarchical_decoder(
+        #             src, z, tgt_mask=None, tgt_key_padding_mask=None, memory2=l
+        #         )
+        #         hierarch_logits, z = self.hierarchical_fcn(out)
 
-            hierarch_logits, z, l = _pack_group_batch(hierarch_logits, z, l)
+        #     if self.cfg.label_condition:
+        #         l = l.unsqueeze(0).repeat(1, z.size(1), 1, 1)
 
-            if return_hierarch:
-                return _unpack_group_batch(N, hierarch_logits, z)
+        #     hierarch_logits, z, l = _pack_group_batch(hierarch_logits, z, l)
+
+        #     if return_hierarch:
+        #         return _unpack_group_batch(N, hierarch_logits, z)
+
+        logger.info(
+            f"[bold red]z after hierarchical encoding {z.shape}[/bold red]",
+            extra={"markup": True},
+        )
 
         if self.cfg.pred_mode == "autoregressive":
             S = commands.size(0)
@@ -643,12 +688,24 @@ class MAEDecoder(nn.Module):
 
         else:  # "one_shot"
             src = self.embedding(z)
+            # torch.Size([41, 32, 256])
             out = self.decoder(src, z, tgt_mask=None, tgt_key_padding_mask=None, memory2=l)
+            # torch.Size([41, 32, 256])
 
+        # torch.Size([41, 32, 7]), ([41, 32, 11, 257])
         command_logits, args_logits = self.fcn(out)
 
         out_logits = (command_logits, args_logits) + (
             (hierarch_logits,) if self.cfg.decode_stages == 2 else ()
+        )
+
+        logger.info(
+            f"[bold red]command_logitsoding {command_logits.shape}[/bold red]",
+            extra={"markup": True},
+        )
+        logger.info(
+            f"[bold red]args logits {args_logits.shape}[/bold red]",
+            extra={"markup": True},
         )
 
         return _unpack_group_batch(N, *out_logits)
