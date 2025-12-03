@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import torch.nn.functional as F
-from vecssl.util import _make_seq_first, _make_batch_first, _pack_group_batch
+from vecssl.util import _make_seq_first
 from vecssl.models.base import JointModel, TrainStep
 from vecssl.models.model import Encoder, DINOImageEncoder
 from vecssl.models.config import ContrastiveConfig
@@ -28,7 +28,7 @@ class ContrastiveModel(JointModel):
 
         self.svg_proj = nn.Linear(self.cfg.d_joint, self.cfg.d_model)
         self.img_proj = nn.Linear(self.image_encoder.backbone.config.hidden_size, self.cfg.d_model)
-    
+
     def encode_joint(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
         """
         Encode SVGs and images into a joint embedding space.
@@ -44,10 +44,9 @@ class ContrastiveModel(JointModel):
 
         # remove extra 1 dim
         z_svg = z_svg.squeeze()
-        
+
         if self.cfg.use_resnet:
             z_svg = self.resnet(z_svg)
-
 
         # Encode image
         img = batch["image"].to(device)
@@ -57,7 +56,7 @@ class ContrastiveModel(JointModel):
         # Project to joint space
         z_svg = self.svg_proj(z_svg)
         z_img = self.img_proj(z_img)
-        
+
         # Normalize
         z_svg = F.normalize(z_svg, dim=-1)
         z_img = F.normalize(z_img, dim=-1)

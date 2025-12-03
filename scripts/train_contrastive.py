@@ -101,7 +101,9 @@ def main():
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
     parser.add_argument("--use-resnet", action="store_true", default=False, help="Use ResNet")
-    parser.add_argument("--temp", type=float, default=0.07, help="Temperature param for contrastive")
+    parser.add_argument(
+        "--temp", type=float, default=0.07, help="Temperature param for contrastive"
+    )
 
     # Training args
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
@@ -111,7 +113,9 @@ def main():
     parser.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping")
     parser.add_argument("--log-every", type=int, default=10, help="Log every N steps")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--tb-dir", type=str, default="runs/test_contrastive", help="TensorBoard dir")
+    parser.add_argument(
+        "--tb-dir", type=str, default="runs/test_contrastive", help="TensorBoard dir"
+    )
 
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
@@ -139,7 +143,10 @@ def main():
     args = parser.parse_args()
 
     setup_logging(
-        level=args.log_level, log_file=args.log_file, rich_tracebacks=True, show_level=True,
+        level=args.log_level,
+        log_file=args.log_file,
+        rich_tracebacks=True,
+        show_level=True,
     )
 
     logger.info("=" * 60)
@@ -199,7 +206,6 @@ def main():
             "use_resnet": cfg.use_resnet,
             "d_joint": cfg.d_joint,
             "temp": cfg.contrastive_logit_scale,
-
             # Training args
             "batch_size": args.batch_size,
             "epochs": args.epochs,
@@ -222,7 +228,7 @@ def main():
         device=device,
         grad_clip=args.grad_clip,
         tb_dir=args.tb_dir,
-        amp=True, 
+        amp=True,
         wandb_project=args.wandb_project,
         cfg=wandb_config,
     )
