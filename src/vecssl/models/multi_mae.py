@@ -192,10 +192,20 @@ class MultiMAEModel(JointModel):
 
         # let's reconstruct the svg, the logits that Jack was talking about
         recon_cmds_logits, recon_args_logits, *rest = self.svg_decoder(
-            z_svg, commands_enc, args_enc
+            z_svg, commands_enc, args_enc, logger=self.logger
         )
 
         seq_len, num_groups, batch_size, n_args, arg_dim = recon_args_logits.shape
+
+        self.logger.info(
+            f"[bold cyan]og cmds shape {commands_enc.shape}[/bold cyan]",
+            extra={"markup": True},
+        )
+
+        self.logger.info(
+            f"[bold cyan]og args  shape {args_enc.shape}[/bold cyan]",
+            extra={"markup": True},
+        )
 
         self.logger.info(
             f"[bold cyan]recon_cmds_logits shape {recon_cmds_logits.shape}[/bold cyan]",
@@ -215,18 +225,49 @@ class MultiMAEModel(JointModel):
 
         seq_len, num_groups, batch_size, n_commands = recon_cmds_logits.shape
 
+        # loss_cmd = F.cross_entropy(masked_cmd_logits, masked_cmd_targets)
+
         # Flatten logits to [total_valid_commands, n_commands]
-        cmd_logits_flat = recon_cmds_logits.permute(2, 1, 0, 3).reshape(-1, n_commands)
+        group_mask = torch.zeros(num_groups, dtype=bool)
+        group_mask[masked_groups] = True
+
+        masked_cmd_logits = recon_cmds_logits[:, group_mask, :, :]
+        masked_cmd_targets = commands_enc[:seq_len][:, group_mask, :]
+
+        masked_args_logits = recon_args_logits[:, group_mask, :, :, :]
+        masked_args_targets = args_enc[:seq_len][:, group_mask, :, :]
+        # self.logger.info(
+        #     f"[bold blue]masked_cmd_logits  shape {masked_cmd_logits.shape}[/bold blue]",
+        #     extra={"markup": True},
+        # )
+        # self.logger.info(
+        #     f"[bold blue]masked_cmd_targets  shape {masked_cmd_targets.shape}[/bold blue]",
+        #     extra={"markup": True},
+        # )
+
+        # self.logger.info(
+        #     f"[bold blue]group mask {group_mask}[/bold blue]",
+        #     extra={"markup": True},
+        # )
+        cmd_logits_flat = masked_cmd_logits.permute(2, 1, 0, 3).reshape(-1, n_commands)
+        self.logger.info(
+            f"[bold cyan]flat logits  shape {cmd_logits_flat.shape}[/bold cyan]",
+            extra={"markup": True},
+        )
 
         # Flatten targets to [total_commands]
-        cmd_targets_flat = commands_enc[:seq_len].permute(2, 1, 0).reshape(-1).long()
+        cmd_targets_flat = masked_cmd_targets.permute(2, 1, 0).reshape(-1).long()
+        self.logger.info(
+            f"[bold cyan]flat target  shape {cmd_targets_flat.shape}[/bold cyan]",
+            extra={"markup": True},
+        )
+        loss_cmd = F.cross_entropy(cmd_logits_flat, cmd_targets_flat)
 
         ##THIS WAS THE SOURCE OF SHAPE ERRORS, HOW BEST TO DEAL WITH PAD_VAL when working with reconstructions?
         ##Currently only compute loss on unpadded values
 
         # Compute CE
-        IGNORE = -100
-        pad_val = -1
+
         # cmd_targets_safe = cmd_targets_flat.clone()
         # cmd_targets_safe[cmd_targets_safe == pad_val] = IGNORE
 
@@ -234,19 +275,20 @@ class MultiMAEModel(JointModel):
         # loss_cmd = F.cross_entropy(cmd_logits_flat, cmd_targets_safe, ignore_index=IGNORE)
 
         # interestingly commands doesnt have any -1 values?
-        loss_cmd = F.cross_entropy(cmd_logits_flat, cmd_targets_flat)
 
         # -------------------------
         # ARGS LOSS
         # -------------------------
 
+        IGNORE = -100
+        pad_val = -1
         seq_len, num_groups, batch_size, n_args, arg_dim = recon_args_logits.shape
 
         # Flatten logits to [total_args, arg_dim]
-        args_logits_flat = recon_args_logits.permute(2, 1, 0, 3, 4).reshape(-1, arg_dim)
+        args_logits_flat = masked_args_logits.permute(2, 1, 0, 3, 4).reshape(-1, arg_dim)
 
         # Flatten targets to [total_args]
-        args_targets_flat = args_enc[:seq_len].permute(2, 1, 0, 3).reshape(-1).long()
+        args_targets_flat = masked_args_targets.permute(2, 1, 0, 3).reshape(-1).long()
 
         ##THIS WAS THE SOURCE OF SHAPE ERRORS, HOW BEST TO DEAL WITH PAD_VAL when working with reconstructions?
         ##Currently only compute loss on unpadded values
