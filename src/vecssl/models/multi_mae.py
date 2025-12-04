@@ -138,6 +138,103 @@ class MultiMAEModel(JointModel):
 
         # return commands_masked, args_masked, mask_positions
 
+    def measure_euclidean_latent_dim(self, z_svg, masked, logger, debug=True):
+        B, G, S, C = z_svg.shape
+
+        # Debug logs
+        logger.info(
+            f"[bold red]Torch is nan {torch.isnan(z_svg).sum()}[/bold red]", extra={"markup": True}
+        )
+
+        # If no groups are masked, treat all as unmasked
+        if masked is None:
+            masked_idxs = []
+            unmasked_idxs = torch.arange(G, device=z_svg.device)
+        else:
+            masked = torch.as_tensor(masked, device=z_svg.device)
+            masked_idxs = masked.tolist()
+            all_groups = torch.arange(G, device=z_svg.device)
+            mask = torch.ones(G, dtype=torch.bool, device=z_svg.device)
+            mask[masked] = False
+            unmasked_idxs = all_groups[mask]
+
+        # Extract latent vectors
+        if masked_idxs:
+            z_masked = z_svg[:, masked_idxs, :, :]  # [B, M, S, C]
+            dist_masked = torch.cdist(z_masked.reshape(-1, C), z_masked.reshape(-1, C)).mean()
+        else:
+            dist_masked = None
+
+        if len(unmasked_idxs) > 0:
+            z_unmasked = z_svg[:, unmasked_idxs, :, :]  # [B, G-M, S, C]
+            dist_unmasked = torch.cdist(z_unmasked.reshape(-1, C), z_unmasked.reshape(-1, C)).mean()
+        else:
+            dist_unmasked = None
+
+        # Logging
+        if dist_masked is not None:
+            logger.info(
+                f"[bold red]MaskedMasked mean distance: {dist_masked}[/bold red]",
+                extra={"markup": True},
+            )
+        if dist_unmasked is not None:
+            logger.info(
+                f"[bold red]UnmaskedUnmasked mean distance: {dist_unmasked}[/bold red]",
+                extra={"markup": True},
+            )
+
+        return dist_masked, dist_unmasked
+
+    def measure_cosine_similarity(self, z_svgs, masked_groups, logger, debug=True):
+        """
+        z_svgs: [B, G, S, C] latent embeddings
+        masked_groups: list or tensor of masked group indices
+        """
+        B, G, S, C = z_svgs.shape
+
+        # ensure tensor
+        if not torch.is_tensor(masked_groups):
+            masked_groups = torch.tensor(masked_groups, device=z_svgs.device)
+
+        # Compute unmasked indices
+        all_groups = torch.arange(G, device=z_svgs.device)
+        mask = torch.ones(G, dtype=torch.bool, device=z_svgs.device)
+        mask[masked_groups] = False
+        unmasked_groups = all_groups[mask]
+
+        # Slice latents
+        z_masked = z_svgs[:, masked_groups]  # [B, M, S, C]
+        z_unmasked = z_svgs[:, unmasked_groups]  # [B, G-M, S, C]
+
+        # Flatten across groups & sequence
+        z_masked_flat = z_masked.reshape(-1, C)  # [M*S, C]
+        z_unmasked_flat = z_unmasked.reshape(-1, C)  # [(G-M)*S, C]
+
+        # Compute pairwise cosine similarity
+        # similarity matrix = (N x C) @ (C x N) → N x N
+        sim_masked = torch.matmul(z_masked_flat, z_masked_flat.T)
+        sim_unmasked = torch.matmul(z_unmasked_flat, z_unmasked_flat.T)
+
+        # normalize (cosine similarity)
+        z_masked_norm = z_masked_flat.norm(dim=1, keepdim=True)
+        z_unmasked_norm = z_unmasked_flat.norm(dim=1, keepdim=True)
+
+        cos_masked = sim_masked / (z_masked_norm @ z_masked_norm.T + 1e-8)
+        cos_unmasked = sim_unmasked / (z_unmasked_norm @ z_unmasked_norm.T + 1e-8)
+
+        # take mean, remove diagonal entries (self-similarity = 1)
+        mean_masked = cos_masked[~torch.eye(cos_masked.shape[0], dtype=bool)].mean()
+        mean_unmasked = cos_unmasked[~torch.eye(cos_unmasked.shape[0], dtype=bool)].mean()
+
+        logger.info(
+            f"[red]MaskedMasked mean cosine sim:   {mean_masked}[/red]", extra={"markup": True}
+        )
+        logger.info(
+            f"[green]UnmaskedUnmasked mean cosine: {mean_unmasked}[/green]", extra={"markup": True}
+        )
+
+        return mean_masked, mean_unmasked
+
     def forward(self, batch):
         """
         Forward pass for multi-modal (image + SVG) masked autoencoder.
@@ -175,6 +272,11 @@ class MultiMAEModel(JointModel):
         # default returns [1,1,4,256]
         # breakpoint()
         z_svg, masked_groups = self.svg_encoder(commands_enc, args_enc, logger=self.logger)
+        # compute cosine similarity to see how the encoder is learning about the space
+        # masked_cos_sim, unmasked_cos_sim = self.measure_cosine_similarity(z_svg, masked_groups, logger)
+        masked_euclid_dis, unmasked_euclid_dis = self.measure_euclidean_latent_dim(
+            z_svg, masked_groups, logger=self.logger
+        )
 
         # self.logger.info(
         #     "[bold cyan]SVG embedded in latent dim z[/bold cyan]", extra={"markup": True}

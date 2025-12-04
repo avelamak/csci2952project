@@ -194,6 +194,7 @@ class MAEEncoder(nn.Module):
     def forward(self, commands, args, logger=None, label=None):
         S, G, N = commands.shape
         l = None
+        mask_group_indices = None
         commands, args, mask_group_indices = self.mask_groups(commands, args)
 
         logger.info(
