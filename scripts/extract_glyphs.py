@@ -32,7 +32,7 @@ def extract_glyphs(ttf_path: Path, output_dir: Path) -> dict:
         font_name = ttf_path.stem
         font_output_dir = output_dir / font_name
         font_output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         has_all_chars = True
         for char in CHARS:
             code_point = ord(char)
