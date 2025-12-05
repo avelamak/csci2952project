@@ -35,6 +35,8 @@ def create_dataloaders(args, cfg):
         split="train",
         seed=args.seed,
         already_preprocessed=True,
+        use_precomputed_dino=args.use_precomputed_dino,
+        dino_dir=args.dino_dir,
     )
 
     # Validation dataset (10% of data)
@@ -47,6 +49,8 @@ def create_dataloaders(args, cfg):
         split="val",
         seed=args.seed,
         already_preprocessed=True,
+        use_precomputed_dino=args.use_precomputed_dino,
+        dino_dir=args.dino_dir,
     )
 
     logger.info(f"  Train samples: {len(train_dataset)}")
@@ -128,6 +132,18 @@ def main():
     parser.add_argument(
         "--resume-from", type=str, default=None, help="Path to checkpoint to resume from"
     )
+    # parser.add_argument("--layer", type=str, default="last", help="Set DINO layer ('middle' or 'final')")
+    parser.add_argument(
+        "--use-precomputed-dino",
+        action="store_true",
+        help="Use precomputed DINO embeddings instead of computing on-the-fly",
+    )
+    parser.add_argument(
+        "--dino-dir",
+        type=str,
+        default=None,
+        help="Directory containing precomputed DINO embeddings (required if --use-precomputed-dino)",
+    )
 
     args = parser.parse_args()
 
@@ -152,6 +168,7 @@ def main():
     cfg.max_seq_len = args.max_seq_len
     cfg.use_resnet = args.use_resnet
     cfg.contrastive_logit_scale = args.temp
+    cfg.use_precomputed_dino = args.use_precomputed_dino
 
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args, cfg)
@@ -197,6 +214,7 @@ def main():
             "max_num_groups": cfg.max_num_groups,
             "max_seq_len": cfg.max_seq_len,
             "use_resnet": cfg.use_resnet,
+            "use_precomputed_dino": cfg.use_precomputed_dino,
             "d_joint": cfg.d_joint,
             "temp": cfg.contrastive_logit_scale,
             # Training args

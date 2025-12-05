@@ -141,6 +141,7 @@ class ContrastiveConfig(_DefaultConfig):
         self.d_joint = 768
         self.use_group = True
         self.d_model = self.d_joint
+        self.use_precomputed_dino = True
 
 
 class JepaConfig(_DefaultConfig):
