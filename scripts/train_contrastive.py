@@ -168,7 +168,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=cfg.lr)
 
     # Create trainer
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: [bold]{device}[/bold]", extra={"markup": True})
 
     # Load checkpoint if resuming
@@ -200,9 +200,9 @@ def main():
             "d_joint": cfg.d_joint,
             "temp": cfg.contrastive_logit_scale,
             # Training args
-            "batch_size": args.batch_size,
-            "epochs": args.epochs,
-            "lr": args.lr,
+            "batch_size": cfg.batch_size,
+            "epochs": cfg.epochs,
+            "lr": cfg.lr,
             "grad_clip": args.grad_clip,
             "num_workers": args.num_workers,
             "log_every": args.log_every,
@@ -222,6 +222,8 @@ def main():
         mixed_precision=args.mixed_precision,
         tb_dir=args.tb_dir,
         wandb_project=args.wandb_project,
+        wandb_name=args.wandb_name,
+        wandb_entity=args.wandb_entity,
         cfg=wandb_config,
     )
 
