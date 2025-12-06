@@ -26,17 +26,98 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 
 from vecssl.util import setup_logging
 
 from eval_utils import (
     add_common_args,
-    compute_embeddings,
     create_eval_dataloader,
     load_encoder,
 )
 
 logger = logging.getLogger(__name__)
+
+
+@torch.no_grad()
+def compute_all_embeddings(
+    model,
+    loader,
+    device: torch.device,
+    max_samples: int | None = None,
+    cache_clear_interval: int = 50,
+) -> tuple[torch.Tensor, torch.Tensor, list, list]:
+    """
+    Compute SVG and image embeddings in a single pass through the dataset.
+
+    Args:
+        model: Encoder model with encode_joint() method
+        loader: DataLoader
+        device: torch device
+        max_samples: if set, stop after roughly this many samples
+        cache_clear_interval: clear GPU cache every N batches to prevent fragmentation
+
+    Returns:
+        tuple: (z_svg [N, d], z_img [N, d], labels [N], uuids [N])
+    """
+    model.eval()
+    model.to(device)
+
+    svg_embeddings = []
+    img_embeddings = []
+    labels = []
+    uuids = []
+
+    try:
+        total_samples = len(loader.dataset)
+    except Exception:
+        total_samples = None
+
+    logger.info(
+        f"Computing embeddings: {total_samples if total_samples else 'unknown'} samples, "
+        f"batch_size={loader.batch_size}"
+    )
+
+    seen = 0
+    for batch_idx, batch in enumerate(loader):
+        # Move tensors to device
+        batch_device = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+
+        # Forward pass - get both modalities at once
+        joint = model.encode_joint(batch_device)
+
+        # Normalize and move to CPU immediately
+        z_svg = F.normalize(joint["svg"], dim=-1).cpu()
+        z_img = F.normalize(joint["img"], dim=-1).cpu()
+
+        svg_embeddings.append(z_svg)
+        img_embeddings.append(z_img)
+        labels.extend(batch["label"].tolist())
+        uuids.extend(batch["uuid"])
+
+        bsz = z_svg.size(0)
+        seen += bsz
+
+        # Progress logging
+        if total_samples is not None:
+            pct = min(100.0 * seen / total_samples, 100.0)
+            if (batch_idx + 1) % 10 == 0 or seen >= total_samples:
+                logger.info(f"Embedded {seen}/{total_samples} ({pct:.1f}%) samples")
+
+        # Clear GPU cache periodically to prevent memory fragmentation
+        if (batch_idx + 1) % cache_clear_interval == 0:
+            torch.cuda.empty_cache()
+
+        # Early stop if max_samples reached
+        if max_samples is not None and seen >= max_samples:
+            logger.info(f"Reached max_samples={max_samples}, stopping early.")
+            break
+
+    z_svg = torch.cat(svg_embeddings, dim=0)
+    z_img = torch.cat(img_embeddings, dim=0)
+
+    logger.info(f"Computed {z_svg.size(0)} embeddings (dim={z_svg.size(1)})")
+    return z_svg, z_img, labels, uuids
 
 
 def recall_at_k(
@@ -154,6 +235,18 @@ def main():
         default=[1, 5, 10],
         help="k values for Recall@k",
     )
+    parser.add_argument(
+        "--max-eval-samples",
+        type=int,
+        default=None,
+        help="Max samples to evaluate (for debugging or memory-constrained runs)",
+    )
+    parser.add_argument(
+        "--cache-clear-interval",
+        type=int,
+        default=50,
+        help="Clear GPU cache every N batches to prevent memory fragmentation",
+    )
 
     args = parser.parse_args()
 
@@ -179,12 +272,15 @@ def main():
         num_workers=args.num_workers,
     )
 
-    # Compute embeddings for both modalities
-    logger.info("Computing SVG embeddings...")
-    z_svg, labels_svg, uuids_svg = compute_embeddings(encoder, loader, device, modality="svg")
-
-    logger.info("Computing image embeddings...")
-    z_img, labels_img, uuids_img = compute_embeddings(encoder, loader, device, modality="img")
+    # Compute embeddings for both modalities in a single pass
+    logger.info("Computing embeddings (single-pass for both modalities)...")
+    z_svg, z_img, labels, uuids = compute_all_embeddings(
+        encoder,
+        loader,
+        device,
+        max_samples=args.max_eval_samples,
+        cache_clear_interval=args.cache_clear_interval,
+    )
 
     # Note for autoencoder
     if args.encoder_type == "autoencoder":
@@ -195,7 +291,7 @@ def main():
 
     # Same-modal retrieval: SVG → SVG
     logger.info("Computing SVG→SVG retrieval...")
-    recalls_svg2svg = recall_at_k(z_svg, z_svg, labels_svg, labels_svg, ks=ks, exclude_self=True)
+    recalls_svg2svg = recall_at_k(z_svg, z_svg, labels, labels, ks=ks, exclude_self=True)
 
     logger.info("SVG → SVG Retrieval:")
     for k, v in recalls_svg2svg.items():
@@ -203,7 +299,7 @@ def main():
 
     # Cross-modal retrieval: SVG → Image
     logger.info("Computing SVG→Image retrieval...")
-    recalls_svg2img = recall_at_k(z_svg, z_img, labels_svg, labels_img, ks=ks, exclude_self=False)
+    recalls_svg2img = recall_at_k(z_svg, z_img, labels, labels, ks=ks, exclude_self=False)
 
     logger.info("SVG → Image Retrieval:")
     for k, v in recalls_svg2img.items():
@@ -211,7 +307,7 @@ def main():
 
     # Cross-modal retrieval: Image → SVG
     logger.info("Computing Image→SVG retrieval...")
-    recalls_img2svg = recall_at_k(z_img, z_svg, labels_img, labels_svg, ks=ks, exclude_self=False)
+    recalls_img2svg = recall_at_k(z_img, z_svg, labels, labels, ks=ks, exclude_self=False)
 
     logger.info("Image → SVG Retrieval:")
     for k, v in recalls_img2svg.items():
