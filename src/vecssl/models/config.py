@@ -170,3 +170,62 @@ class JepaConfig(_DefaultConfig):
 
         # Precomputed DINO embeddings support
         self.use_precomputed_dino = False
+
+
+class SVGMAEConfig(_DefaultConfig):
+    """Config for SVG-only Masked Autoencoder"""
+
+    def __init__(self):
+        super().__init__()
+
+        self.encode_stages = 2  # Use 2-stage structure for per-group encoding
+        self.decode_stages = 1  # Single-stage decoder for reconstructing tokens
+        self.use_vae = False  # No VAE for MAE
+        self.use_resnet = False
+
+        # Masking ratio
+        self.mask_ratio_svg = 0.75  # Mask 75% of SVG groups
+
+        # MAE encoder (processes visible groups + CLS)
+        self.mae_depth = 4
+        self.mae_num_heads = 8
+        self.mae_mlp_ratio = 4.0
+        self.mae_dropout = 0.1
+
+        # Loss weights (using SVGLoss pattern)
+        self.loss_cmd_weight = 1.0
+        self.loss_args_weight = 2.0
+
+
+class MultiMAEConfig(_DefaultConfig):
+    """Config for SVG + Image Multi-modal Masked Autoencoder"""
+
+    def __init__(self):
+        super().__init__()
+
+        self.encode_stages = 2  # Use 2-stage structure for per-group encoding
+        self.decode_stages = 1  # Single-stage decoder for reconstructing tokens
+        self.use_vae = False  # No VAE for MAE
+        self.use_resnet = False
+
+        # Masking ratios
+        self.mask_ratio_svg = 0.5  # Mask 50% of SVG groups
+        self.mask_ratio_img = 0.75  # Mask 75% of image patches
+
+        # Shared MAE encoder (processes visible SVG + visible image + CLS)
+        self.mae_depth = 8
+        self.mae_num_heads = 8
+        self.mae_mlp_ratio = 4.0
+        self.mae_dropout = 0.1
+
+        # DINO configuration
+        self.dino_model_name = "facebook/dinov2-base"
+        self.train_dino = False
+        self.use_precomputed_dino_patches = False
+
+        # Image projection (768 -> d_model)
+        self.img_proj_dim = 768  # DINO hidden size
+
+        # Loss weights
+        self.loss_cmd_weight = 1.0
+        self.loss_args_weight = 2.0

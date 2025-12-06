@@ -39,6 +39,8 @@ class SVGXDataset(Dataset):
         cache: bool = False,
         use_precomputed_dino: bool = False,
         dino_dir: Optional[str] = None,
+        use_precomputed_dino_patches: bool = False,
+        dino_patches_dir: Optional[str] = None,
     ):
         self.svg_dir = svg_dir
         self.img_dir = img_dir
@@ -47,9 +49,16 @@ class SVGXDataset(Dataset):
         self.cache = cache
         self.use_precomputed_dino = use_precomputed_dino
         self.dino_dir = dino_dir
+        self.use_precomputed_dino_patches = use_precomputed_dino_patches
+        self.dino_patches_dir = dino_patches_dir
 
         if use_precomputed_dino and dino_dir is None:
             raise ValueError("dino_dir must be provided when use_precomputed_dino is True")
+
+        if use_precomputed_dino_patches and dino_patches_dir is None:
+            raise ValueError(
+                "dino_patches_dir must be provided when use_precomputed_dino_patches is True"
+            )
 
         self.MAX_NUM_GROUPS = max_num_groups
         self.MAX_SEQ_LEN = max_seq_len
@@ -174,12 +183,19 @@ class SVGXDataset(Dataset):
                 img_path = os.path.join(self.img_dir, f"{uuid}.png")
                 img_bytes = Path(img_path).read_bytes()
 
-                # --- DINO ---
+                # --- DINO CLS embedding ---
                 dino_embedding = None
                 if self.use_precomputed_dino:
                     dino_path = os.path.join(self.dino_dir, f"{uuid}.pt")
                     dino_data = torch.load(dino_path, map_location="cpu")
                     dino_embedding = dino_data["dino"]  # [768] or whatever
+
+                # --- DINO patch embeddings (for MultiMAE) ---
+                dino_patches = None
+                if self.use_precomputed_dino_patches:
+                    patches_path = os.path.join(self.dino_patches_dir, f"{uuid}.pt")
+                    patches_data = torch.load(patches_path, map_location="cpu")
+                    dino_patches = patches_data["patches"]  # (num_patches, 768)
 
                 cached_sample: dict[str, Any] = {
                     # SVG stuff (ready-to-use tensors / objects)
@@ -198,6 +214,9 @@ class SVGXDataset(Dataset):
 
                 if dino_embedding is not None:
                     cached_sample["dino_embedding"] = dino_embedding
+
+                if dino_patches is not None:
+                    cached_sample["dino_patches"] = dino_patches
 
                 cache.append(cached_sample)
                 progress.advance(_cache_task)
@@ -231,6 +250,9 @@ class SVGXDataset(Dataset):
 
             if "dino_embedding" in cached:
                 sample["dino_embedding"] = cached["dino_embedding"]
+
+            if "dino_patches" in cached:
+                sample["dino_patches"] = cached["dino_patches"]
 
             return sample
 
@@ -267,6 +289,11 @@ class SVGXDataset(Dataset):
             dino_path = os.path.join(self.dino_dir, f"{uuid}.pt")
             dino_data = torch.load(dino_path, map_location="cpu")
             sample["dino_embedding"] = dino_data["dino"]
+
+        if self.use_precomputed_dino_patches and self.dino_patches_dir is not None:
+            patches_path = os.path.join(self.dino_patches_dir, f"{uuid}.pt")
+            patches_data = torch.load(patches_path, map_location="cpu")
+            sample["dino_patches"] = patches_data["patches"]  # (num_patches, 768)
 
         return sample
 
