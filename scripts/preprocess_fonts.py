@@ -8,6 +8,7 @@ from argparse import ArgumentParser
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import logging
+import re
 import pandas as pd
 import torch
 import cairosvg
@@ -52,11 +53,22 @@ def _init_worker(output_svg_folder, output_img_folder, to_tensor):
 
 
 def family_to_labels(svg_paths):
-    """Convert family name to integer label."""
-    family_names = [path.parent.name.split("-")[0] for path in svg_paths]
-    family_names = list(set(family_names))
-    family_names = sorted(family_names)
-    return family_names
+    """Extract unique font family names from SVG paths."""
+    families = set()
+    for path in svg_paths:
+        name = path.parent.name
+        # Remove variable font axes notation [...]
+        name = re.sub(r"\[.*\]$", "", name)
+        # Remove style suffixes
+        name = re.sub(
+            r"-(Regular|Bold|Italic|Light|Medium|SemiBold|ExtraBold|Black|Thin|ExtraLight|"
+            r"BoldItalic|LightItalic|MediumItalic|SemiBoldItalic|ExtraBoldItalic|"
+            r"BlackItalic|ThinItalic|ExtraLightItalic|Oblique)+$",
+            "",
+            name,
+        )
+        families.add(name)
+    return sorted(families)
 
 
 def preprocess_glyph(svg_path: Path, family_labels: list) -> dict | None:
