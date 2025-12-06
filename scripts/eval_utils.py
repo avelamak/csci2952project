@@ -15,9 +15,17 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.config import ContrastiveConfig, JepaConfig, _DefaultConfig
+from vecssl.models.config import (
+    ContrastiveConfig,
+    JepaConfig,
+    SVGMAEConfig,
+    MultiMAEConfig,
+    _DefaultConfig,
+)
 from vecssl.models.contrastive import ContrastiveModel
 from vecssl.models.jepa import Jepa
+from vecssl.models.svgmae import SVGMAE
+from vecssl.models.multimae import MultiMAE
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +49,13 @@ def custom_collate(batch):
         "family_label": torch.tensor([item["family_label"] for item in batch], dtype=torch.long),
     }
 
-    # Handle optional DINO embeddings (precomputed)
+    # Handle optional DINO embeddings (precomputed CLS embedding)
     if "dino_embedding" in batch[0]:
         collated["dino_embedding"] = torch.stack([item["dino_embedding"] for item in batch])
+
+    # Handle optional DINO patches (precomputed patch embeddings for MultiMAE)
+    if "dino_patches" in batch[0]:
+        collated["dino_patches"] = torch.stack([item["dino_patches"] for item in batch])
 
     # Handle optional label fields
     if "label" in batch[0]:
@@ -120,9 +132,35 @@ def load_encoder(
 
         model = SimpleSVGAutoencoder(cfg)
 
+    elif encoder_type == "svgmae":
+        if isinstance(cfg_obj, SVGMAEConfig):
+            cfg = cfg_obj
+        elif isinstance(cfg_obj, dict):
+            cfg = SVGMAEConfig()
+            for k, v in cfg_obj.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+        else:
+            logger.warning("No config in checkpoint, using default SVGMAEConfig")
+            cfg = SVGMAEConfig()
+        model = SVGMAE(cfg)
+
+    elif encoder_type == "multimae":
+        if isinstance(cfg_obj, MultiMAEConfig):
+            cfg = cfg_obj
+        elif isinstance(cfg_obj, dict):
+            cfg = MultiMAEConfig()
+            for k, v in cfg_obj.items():
+                if hasattr(cfg, k):
+                    setattr(cfg, k, v)
+        else:
+            logger.warning("No config in checkpoint, using default MultiMAEConfig")
+            cfg = MultiMAEConfig()
+        model = MultiMAE(cfg)
+
     else:
         raise ValueError(
-            f"Unknown encoder_type: {encoder_type}. Must be 'jepa', 'contrastive', or 'autoencoder'"
+            f"Unknown encoder_type: {encoder_type}. Must be 'jepa', 'contrastive', 'autoencoder', 'svgmae', or 'multimae'"
         )
 
     model.load_state_dict(ckpt["model"])

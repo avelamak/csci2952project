@@ -88,7 +88,7 @@ class Jepa(JointModel):
         # Only load DINOImageEncoder if not using precomputed embeddings
         if not cfg.use_precomputed_dino:
             with torch.no_grad():
-                self.image_encoder = DINOImageEncoder()
+                self.image_encoder = DINOImageEncoder(layer=self.cfg.DINO_layer)
                 for param in self.image_encoder.parameters():
                     param.requires_grad = False
         else:

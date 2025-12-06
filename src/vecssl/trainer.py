@@ -47,11 +47,11 @@ class Trainer:
         if wandb_project:
             log_with.append("wandb")
 
-        # Project configuration for checkpointing
+        # Project configuration for checkpointing and logging
         project_config = None
-        if checkpoint_dir:
+        if checkpoint_dir or tb_dir:
             project_config = ProjectConfiguration(
-                project_dir=str(checkpoint_dir),
+                project_dir=str(checkpoint_dir) if checkpoint_dir else ".",
                 logging_dir=tb_dir,
             )
 

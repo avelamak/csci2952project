@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# This is an example batch script for slurm on Oscar
+#
+# The commands for slurm start with #SBATCH
+# All slurm commands need to come before the program
+# you want to run.  In this example, 'echo "Hello World!"
+# is the command we are running.
+#
+# This is a bash script, so any line that starts with # is
+# a comment.  If you need to comment out an #SBATCH line
+# use ##SBATCH
+#
+# To submit this script to slurm do:
+#    sbatch batch.script
+#
+# Once the job starts you will see a file MySerialJob-****.out
+# The **** will be the slurm JobID
+
+# --- Start of slurm commands -----------
+
+#SBATCH --time=24:00:00
+
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=6
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+
+#SBATCH -J Precompute_DINO
+#SBATCH -o Precompute_DINO-%j.out
+#SBATCH -e Precompute_DINO-%j.err
+
+#----- End of slurm commands ----
+
+source .venv/bin/activate
+
+python scripts/precompute_dino_embeddings.py \
+    --DINO_layer 6 \
+    --img-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/img \
+    --meta /oscar/scratch/zzhan215/google_fonts_processed_reduced/metadata.csv \
+    --output-dir /oscar/home/bsteedly/DINO_embeddings \
+    --batch-size 64 \
+    --num-workers 0 \
+    --max-samples 100
