@@ -25,18 +25,22 @@ from transformers import AutoImageProcessor, AutoModel
 
 
 class DINOImageEncoder(nn.Module):
-    def __init__(self):
+    def __init__(self, layer: int = -1):
         super().__init__()
+        self.layer = layer
+
         self.processor = AutoImageProcessor.from_pretrained(
             "facebook/dinov2-base", do_rescale=False, use_fast=True
         )
-        self.backbone = AutoModel.from_pretrained("facebook/dinov2-base")
+        self.backbone = AutoModel.from_pretrained("facebook/dinov2-base", output_hidden_states=True)
 
     def forward(self, x):
         inputs = self.processor(images=x, return_tensors="pt")
         inputs = {k: v.to(next(self.backbone.parameters()).device) for k, v in inputs.items()}
         outputs = self.backbone(**inputs)
-        cls_token_output = outputs.last_hidden_state[:, 0, :]
+        hidden_states = outputs.hidden_states
+        h = hidden_states[self.layer]
+        cls_token_output = h[:, 0, :]
         return cls_token_output
 
 
