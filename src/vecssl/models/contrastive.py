@@ -22,7 +22,7 @@ class ContrastiveModel(JointModel):
             self.resnet = ResNet(cfg.d_model)
 
         # Initialize DINO embedding model
-        self.image_encoder = DINOImageEncoder()
+        self.image_encoder = DINOImageEncoder(layer=self.cfg.DINO_layer)
         for param in self.image_encoder.parameters():
             param.requires_grad = False
 

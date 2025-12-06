@@ -57,6 +57,8 @@ class _DefaultConfig:
         self.batch_size = 64
         self.epochs = 100
 
+        self.DINO_layer = -1  # DINO layer to use (-1 is the last layer)
+
     def get_model_args(self):
         model_args = []
 
