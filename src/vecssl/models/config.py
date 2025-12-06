@@ -141,6 +141,8 @@ class ContrastiveConfig(_DefaultConfig):
         self.d_joint = 768
         self.use_group = True
         self.d_model = self.d_joint
+        self.use_precomputed_dino = True
+        self.dino_dir = "/oscar/scratch/zzhan215/google_fonts_processed_reduced/dino"
 
 
 class JepaConfig(_DefaultConfig):
