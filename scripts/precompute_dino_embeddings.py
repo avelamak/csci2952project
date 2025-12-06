@@ -81,6 +81,24 @@ def parse_args():
         help="Accelerate mixed precision mode",
     )
 
+    parser.add_argument(
+        "--dino-block-index",
+        type=int,
+        default=None,
+        help=(
+            "Which DINO transformer block to read from (0-based). "
+            "None = final layer (default). For DINOv2-base (12 blocks), "
+            "typical mid-layer choices are 5-8."
+        ),
+    )
+    parser.add_argument(
+        "--dino-pool",
+        type=str,
+        default="cls",
+        choices=["cls", "mean_patch"],
+        help="How to pool tokens: CLS token or mean of patch tokens (default: cls).",
+    )
+
     return parser.parse_args()
 
 
@@ -93,6 +111,10 @@ def main():
     if accelerator.is_main_process:
         logger.info("Starting DINO precompute with Accelerate")
         logger.info(f"Using device: {accelerator.device}")
+        layer_desc = (
+            f"block {args.dino_block_index}" if args.dino_block_index is not None else "final"
+        )
+        logger.info(f"DINO config: layer={layer_desc}, pool={args.dino_pool}")
         out_dir = Path(args.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
     accelerator.wait_for_everyone()
@@ -113,8 +135,11 @@ def main():
         collate_fn=dino_collate,
     )
 
-    # Your DINOImageEncoder exactly as defined
-    model = DINOImageEncoder()
+    # DINOImageEncoder with optional mid-layer / pooling config
+    model = DINOImageEncoder(
+        block_index=args.dino_block_index,
+        pool=args.dino_pool,
+    )
     model.eval()
     model.requires_grad_(False)
 
@@ -142,7 +167,14 @@ def main():
             # DistributedSampler from accelerator.prepare ensures no overlap.
             for uuid, emb in zip(uuids, embeddings, strict=False):
                 out_path = output_dir / f"{uuid}.pt"
-                torch.save({"dino": emb}, out_path)
+                torch.save(
+                    {
+                        "dino": emb,
+                        "block_index": args.dino_block_index,
+                        "pool": args.dino_pool,
+                    },
+                    out_path,
+                )
 
             progress.advance(task)
 
