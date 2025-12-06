@@ -63,6 +63,12 @@ def dino_collate(batch):
 def parse_args():
     parser = argparse.ArgumentParser(description="Precompute DINOv2 embeddings with Accelerate")
 
+    parser.add_argument(
+        "--DINO_layer",
+        type=int,
+        default=-1,
+        help="-1 = last layer, 0 = patch embedding output, 1..n = transformer blocks",
+    )
     parser.add_argument("--img-dir", type=str, required=True, help="Directory with PNG images")
     parser.add_argument("--meta", type=str, required=True, help="CSV with at least a 'uuid' column")
     parser.add_argument(
@@ -114,7 +120,7 @@ def main():
     )
 
     # Your DINOImageEncoder exactly as defined
-    model = DINOImageEncoder()
+    model = DINOImageEncoder(layer=args.DINO_layer)
     model.eval()
     model.requires_grad_(False)
 
