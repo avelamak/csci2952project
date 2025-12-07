@@ -5,6 +5,7 @@ import random
 from pathlib import Path
 
 import pandas as pd
+from sklearn.model_selection import train_test_split
 from PIL import Image
 
 import torch
@@ -41,6 +42,7 @@ class SVGXDataset(Dataset):
         dino_dir: Optional[str] = None,
         use_precomputed_dino_patches: bool = False,
         dino_patches_dir: Optional[str] = None,
+        stratify_by: Optional[str] = None,
     ):
         self.svg_dir = svg_dir
         self.img_dir = img_dir
@@ -82,19 +84,50 @@ class SVGXDataset(Dataset):
 
         # Shuffle with seed for reproducible splits
         df_shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
-        n = len(df_shuffled)
-        train_end = int(n * train_ratio)
-        val_end = train_end + int(n * val_ratio)
 
-        # Select split
-        if split == "train":
-            df_split = df_shuffled.iloc[:train_end]
-        elif split == "val":
-            df_split = df_shuffled.iloc[train_end:val_end]
-        elif split == "test":
-            df_split = df_shuffled.iloc[val_end:]
+        if stratify_by and stratify_by in df_shuffled.columns:
+            # Stratified split: ensure each class appears proportionally in all splits
+            stratify_col = df_shuffled[stratify_by]
+
+            # First split: train vs (val+test)
+            train_df, valtest_df = train_test_split(
+                df_shuffled,
+                train_size=train_ratio,
+                stratify=stratify_col,
+                random_state=seed,
+            )
+
+            # Second split: val vs test
+            val_test_ratio = val_ratio / (val_ratio + test_ratio)
+            val_df, test_df = train_test_split(
+                valtest_df,
+                train_size=val_test_ratio,
+                stratify=valtest_df[stratify_by],
+                random_state=seed,
+            )
+
+            if split == "train":
+                df_split = train_df
+            elif split == "val":
+                df_split = val_df
+            elif split == "test":
+                df_split = test_df
+            else:
+                raise ValueError(f"Invalid split: {split}. Must be 'train', 'val', or 'test'")
         else:
-            raise ValueError(f"Invalid split: {split}. Must be 'train', 'val', or 'test'")
+            # Original random split behavior
+            n = len(df_shuffled)
+            train_end = int(n * train_ratio)
+            val_end = train_end + int(n * val_ratio)
+
+            if split == "train":
+                df_split = df_shuffled.iloc[:train_end]
+            elif split == "val":
+                df_split = df_shuffled.iloc[train_end:val_end]
+            elif split == "test":
+                df_split = df_shuffled.iloc[val_end:]
+            else:
+                raise ValueError(f"Invalid split: {split}. Must be 'train', 'val', or 'test'")
 
         self.df = df_split.reset_index(drop=True)
 

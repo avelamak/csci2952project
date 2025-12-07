@@ -175,6 +175,9 @@ def main():
     else:  # autoencoder
         embed_dim = cfg.dim_z
 
+    # Use stratified split for family_label to ensure all families in train and val
+    stratify_by = "family_label" if args.task == "family_label" else None
+
     # Create train and val dataloaders (separate splits to avoid data leakage)
     train_loader = create_eval_dataloader(
         svg_dir=args.svg_dir,
@@ -186,6 +189,7 @@ def main():
         num_workers=args.num_workers,
         split="train",
         shuffle=True,
+        stratify_by=stratify_by,
     )
 
     val_loader = create_eval_dataloader(
@@ -198,6 +202,7 @@ def main():
         num_workers=args.num_workers,
         split="val",
         shuffle=False,
+        stratify_by=stratify_by,
     )
 
     # Determine number of classes from dataset

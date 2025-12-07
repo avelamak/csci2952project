@@ -52,21 +52,27 @@ def _init_worker(output_svg_folder, output_img_folder, to_tensor):
     _TO_TENSOR = to_tensor
 
 
+def get_family_name(font_folder_name: str) -> str:
+    """Extract family name from font folder name."""
+    name = font_folder_name
+    # Remove variable font axes notation [...]
+    name = re.sub(r"\[.*\]$", "", name)
+    # Remove style suffixes
+    name = re.sub(
+        r"-(Regular|Bold|Italic|Light|Medium|SemiBold|ExtraBold|Black|Thin|ExtraLight|"
+        r"BoldItalic|LightItalic|MediumItalic|SemiBoldItalic|ExtraBoldItalic|"
+        r"BlackItalic|ThinItalic|ExtraLightItalic|Oblique)+$",
+        "",
+        name,
+    )
+    return name
+
+
 def family_to_labels(svg_paths):
     """Extract unique font family names from SVG paths."""
     families = set()
     for path in svg_paths:
-        name = path.parent.name
-        # Remove variable font axes notation [...]
-        name = re.sub(r"\[.*\]$", "", name)
-        # Remove style suffixes
-        name = re.sub(
-            r"-(Regular|Bold|Italic|Light|Medium|SemiBold|ExtraBold|Black|Thin|ExtraLight|"
-            r"BoldItalic|LightItalic|MediumItalic|SemiBoldItalic|ExtraBoldItalic|"
-            r"BlackItalic|ThinItalic|ExtraLightItalic|Oblique)+$",
-            "",
-            name,
-        )
+        name = get_family_name(path.parent.name)
         families.add(name)
     return sorted(families)
 
@@ -75,7 +81,7 @@ def preprocess_glyph(svg_path: Path, family_labels: list) -> dict | None:
     """Process a single glyph SVG."""
     try:
         font_name = svg_path.parent.name
-        family_name = font_name.split("-")[0]
+        family_name = get_family_name(font_name)
         family_label = family_labels.index(family_name)
         char = filename_to_char(svg_path.name)
         label = char_to_label(char)

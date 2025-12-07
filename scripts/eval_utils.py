@@ -227,6 +227,7 @@ def create_eval_dataloader(
     split: str = "test",
     seed: int = 42,
     shuffle: bool = False,
+    stratify_by: str | None = None,
 ) -> DataLoader:
     """
     Create a dataloader for evaluation.
@@ -242,6 +243,7 @@ def create_eval_dataloader(
         split: Data split to use ("train", "val", or "test")
         seed: Random seed for reproducible splits
         shuffle: Whether to shuffle the data
+        stratify_by: Column to stratify split by (e.g., "family_label")
 
     Returns:
         DataLoader
@@ -255,6 +257,7 @@ def create_eval_dataloader(
         split=split,
         seed=seed,
         already_preprocessed=True,
+        stratify_by=stratify_by,
     )
 
     loader = DataLoader(
