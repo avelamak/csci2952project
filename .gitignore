@@ -6,6 +6,8 @@ runs/
 wandb/
 datasets/
 google_fonts/
+data/
+out
 
 # PCA files
 pca_img.png
