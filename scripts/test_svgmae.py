@@ -23,7 +23,15 @@ from vecssl.models.svgmae import SVGMAE
 from vecssl.trainer import Trainer
 from vecssl.util import setup_logging, set_seed
 
+
 from eval_utils import custom_collate
+
+import cairosvg
+
+
+def svg_to_png(svg_path: str, png_path: str):
+    cairosvg.svg2png(url=svg_path, write_to=png_path, background_color="#ffffff")
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +41,7 @@ def decode_svg_from_cmd_args(
     args: torch.Tensor,
     viewbox_size: int = 256,  # Match ARGS_DIM quantization range
     pad_val: int = -1,
+    logger=None,
 ) -> SVG:
     """
     Decode commands and args tensors back to an SVG object.
@@ -56,22 +65,74 @@ def decode_svg_from_cmd_args(
 
     # Find actual sequence length (before EOS/padding)
     eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
-    valid_mask = (commands != pad_val) & (commands != eos_idx)
 
-    if valid_mask.any():
-        # Find last valid command
-        seq_len = valid_mask.long().sum().item()
+    # Ensure commands are flat ints
+    commands = commands.long()
+
+    # Find EOS position safely
+    eos_positions = (commands == eos_idx).nonzero(as_tuple=True)[0]
+    if len(eos_positions) > 0:
+        seq_len = int(eos_positions[0].item())
     else:
-        seq_len = 0
+        # No EOS found trim padding only
+        valid_positions = (commands != pad_val).nonzero(as_tuple=True)[0]
+        seq_len = int(valid_positions[-1].item()) + 1 if len(valid_positions) > 0 else 0
 
     if seq_len == 0:
         # Return empty SVG
         return SVG([], viewbox=Bbox(viewbox_size))
 
     # Truncate to valid length
-    commands = commands[:seq_len]
-    args = args[:seq_len]
+    max_len = min(len(commands), len(args))
+    commands = commands[:max_len]
+    args = args[:max_len]
 
+    cmd_vocab = SVGTensor.COMMANDS_SIMPLIFIED
+    valid_svg_cmds = {"m", "l", "c", "z", "h", "v", "a"}  # adapt if needed
+
+    filtered_cmds = []
+    filtered_args = []
+
+    for i, c_idx in enumerate(commands.tolist()):
+        cmd = cmd_vocab[c_idx]
+
+        # Stop on EOS
+        if cmd == "EOS":
+            break
+
+        # Skip SOS / PAD / MASK / etc
+        if cmd not in valid_svg_cmds:
+            continue
+
+        filtered_cmds.append(c_idx)
+        filtered_args.append(args[i])
+
+    if len(filtered_cmds) == 0:
+        return SVG([], viewbox=Bbox(viewbox_size))
+
+    if logger:
+        logger.info(
+            f"[viz] First 30 SVG cmds before filtering: {[cmd_vocab[c] for c in filtered_cmds[:30]]}"
+        )
+
+    if len(filtered_cmds) > 0:
+        first_cmd = cmd_vocab[filtered_cmds[0]]
+        if first_cmd not in ("m", "M"):
+            # Insert moveto(0,0)
+            m_idx = cmd_vocab.index("m")
+            filtered_cmds.insert(0, m_idx)
+
+            # Create dummy args
+            dummy = torch.zeros_like(filtered_args[0])
+            filtered_args.insert(0, dummy)
+
+    if logger:
+        logger.info(
+            f"[viz] First 30 SVG cmds after filtering: {[cmd_vocab[c] for c in filtered_cmds[:30]]}"
+        )
+
+    commands = torch.tensor(filtered_cmds, dtype=torch.long)
+    args = torch.stack(filtered_args)
     # Create SVGTensor from commands and args
     svg_tensor = SVGTensor.from_cmd_args(
         commands,
@@ -97,7 +158,7 @@ def visualize_batch(model, batch, epoch, out_dir="debug_svgs"):
         out_dir: Output directory for SVG files
     """
     Path(out_dir).mkdir(parents=True, exist_ok=True)
-    device = next(model.parameters()).device
+    # device = next(model.parameters()).device
 
     b = 0  # first sample in batch
 
@@ -108,40 +169,56 @@ def visualize_batch(model, batch, epoch, out_dir="debug_svgs"):
     try:
         gt_svg = decode_svg_from_cmd_args(gt_commands, gt_args)
         gt_path = Path(out_dir) / f"ep{epoch:03d}_gt.svg"
+        gt_png_path = Path(out_dir) / f"ep{epoch:03d}_gt.png"
         gt_svg.save_svg(str(gt_path))
+        svg_to_png(str(gt_path), str(gt_png_path))
         logger.info(f"[viz] Saved GT to {gt_path}")
     except Exception as e:
         logger.warning(f"[viz] Failed to save GT SVG: {e}")
 
     # Generate prediction via greedy sampling
-    enc_commands = batch["commands"][b : b + 1].to(device)
-    enc_args = batch["args"][b : b + 1].to(device)
+    # enc_commands = batch["commands"][b : b + 1].to(device)
+    # enc_args = batch["args"][b : b + 1].to(device)
 
     with torch.no_grad():
-        commands_y, args_y = model.model.greedy_sample(
-            commands_enc=enc_commands,
-            args_enc=enc_args,
-            commands_dec=None,
-            args_dec=None,
-            label=None,
-            z=None,
-            hierarch_logits=None,
-            concat_groups=True,
-            temperature=0.0001,
-        )
+        commands_y, args_y = model.model.greedy_reconstruct(batch)
 
     # Log first few predicted commands
     cmd_names = SVGTensor.COMMANDS_SIMPLIFIED
-    first_seq = commands_y[0].cpu().tolist()
+    # first_seq = commands_y[0].view(-1).cpu().tolist()
+
+    # Flatten outputs
+    cmds = commands_y[0].reshape(-1).cpu().tolist()
+    args = args_y[0].reshape(-1, args_y.shape[-1]).cpu().float()
+
+    # Filter out non-draw commands
+    valid_cmds = []
+    valid_args = []
+    for i, c in enumerate(cmds):
+        name = cmd_names[int(c)]
+        if name in ["SOS", "EOS", "PAD"]:
+            continue
+        valid_cmds.append(c)
+        valid_args.append(args[i])
+
+    valid_cmds = torch.tensor(valid_cmds, dtype=torch.long)
+    valid_args = (
+        torch.stack(valid_args) if len(valid_args) > 0 else torch.empty((0, args.shape[-1]))
+    )
+
+    logger.info(f"[viz] filtered cmds count: {len(valid_cmds)}")
+    logger.info(f"[viz] filtered args count: {len(valid_args)}")
     decoded_cmds = [
-        cmd_names[int(c)] if 0 <= int(c) < len(cmd_names) else f"?{c}" for c in first_seq[:10]
+        cmd_names[int(c)] if 0 <= int(c) < len(cmd_names) else f"?{c}" for c in valid_cmds[:10]
     ]
     logger.info(f"[viz] Pred cmds (first 10): {decoded_cmds}")
 
     try:
-        pred_svg = decode_svg_from_cmd_args(commands_y[0].cpu(), args_y[0].cpu().float())
+        pred_svg = decode_svg_from_cmd_args(valid_cmds, valid_args, logger=logger)
         pred_path = Path(out_dir) / f"ep{epoch:03d}_pred.svg"
+        pred_path_png = Path(out_dir) / f"ep{epoch:03d}_pred.png"
         pred_svg.save_svg(str(pred_path))
+        svg_to_png(str(pred_path), str(pred_path_png))
         logger.info(f"[viz] Saved pred to {pred_path}")
     except Exception as e:
         logger.warning(f"[viz] Failed to save pred SVG: {e}")
@@ -278,7 +355,7 @@ class DebugTrainer(Trainer):
         self.first_step_done = True
 
     @torch.no_grad()
-    def reconstruct_svgs(self, train_loader, batch=None, out_dir="svg_recon"):
+    def reconstruct_svgs(self, train_loader, epochs, batch=None, out_dir="svg_recon"):
         if not self.accelerator.is_main_process:
             return None
 
@@ -290,8 +367,11 @@ class DebugTrainer(Trainer):
         self.model.eval()
         unwrapped_model = self.accelerator.unwrap_model(self.model)
 
+        epoch_dir = Path(out_dir) / f"epoch_{epochs:03d}"
+        epoch_dir.mkdir(parents=True, exist_ok=True)
+
         # Call visualize_batch
-        visualize_batch(unwrapped_model, batch, epoch=0, out_dir=out_dir)
+        visualize_batch(unwrapped_model, batch, epoch=epochs, out_dir=str(epoch_dir))
 
         logger.info(f"[bold green]Saved reconstruction SVGs to {out_dir}[/bold green]")
 
@@ -598,7 +678,7 @@ def main():
 
     logger.info("Checking recon quality")
     try:
-        trainer.reconstruct_svgs(train_loader=train_loader)
+        trainer.reconstruct_svgs(train_loader=train_loader, epochs=args.epochs)
         logger.info(
             "[bold green]✓ Recon completed successfully SVGs saved to: ![/bold green]",
             extra={"markup": True},

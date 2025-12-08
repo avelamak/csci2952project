@@ -334,6 +334,78 @@ class SVGMAE(JointModel):
             masked_mask_pad,
         )
 
+    @torch.no_grad()
+    def greedy_reconstruct(self, batch: dict):
+        """
+        Deterministically reconstruct masked SVG groups and return full SVG tokens.
+        """
+        device = next(self.parameters()).device
+
+        commands = batch["commands"].to(device)  # (N, G, S)
+        args = batch["args"].to(device)  # (N, G, S, n_args)
+
+        N, G, S = commands.shape
+        # n_args = args.shape[-1]
+
+        # 1. Group embeddings
+        group_embs = self.svg_group_encoder(commands, args)
+
+        # 2. Visibility mask
+        from vecssl.data.svg_tensor import SVGTensor
+
+        EOS_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+        visibility = commands[:, :, 0] != EOS_idx
+
+        # IMPORTANT: use same masking ratio, but deterministic
+        (
+            visible_embs,
+            visible_indices,
+            masked_indices,
+            mask,
+            visible_mask_pad,
+            masked_mask_pad,
+        ) = self._mask_groups(group_embs, visibility)
+
+        # 3. Encode [CLS + visible]
+        cls_token = self.cls_token.expand(N, -1, -1)
+        enc_input = torch.cat([cls_token, visible_embs], dim=1)
+
+        cls_valid = torch.ones(N, 1, dtype=torch.bool, device=device)
+        enc_key_padding_mask = ~torch.cat([cls_valid, visible_mask_pad], dim=1)
+
+        enc_input_sf = enc_input.transpose(0, 1)
+        memory = self.mae_encoder(enc_input_sf, src_key_padding_mask=enc_key_padding_mask)
+        memory = memory.transpose(0, 1)
+
+        # 4. Build masked tokens
+        num_masked = masked_mask_pad.sum(dim=1).max().item()
+        masked_z = self.mask_token.expand(N, num_masked, -1)
+
+        # 5. Decode
+        pred_cmd_logits, pred_args_logits = self.svg_decoder(
+            masked_z, memory=memory, memory_key_padding_mask=enc_key_padding_mask
+        )
+
+        # 6. Greedy decode tokens
+        pred_commands = pred_cmd_logits.argmax(dim=-1)  # (N, M, S)
+        pred_args = pred_args_logits.argmax(dim=-1) - 1  # shift back from PAD
+
+        # 7. Merge visible + predicted into full SVG
+        out_commands = commands.clone()
+        out_args = args.clone()
+
+        # mask_bool = mask & visibility  # only valid masked groups
+
+        for i in range(N):
+            for j in range(num_masked):
+                idx = masked_indices[i, j].item()
+                if idx == 0 and masked_mask_pad[i, j] == 0:
+                    continue
+                out_commands[i, idx] = pred_commands[i, j]
+                out_args[i, idx] = pred_args[i, j]
+
+        return out_commands, out_args
+
     def _compute_svg_loss(
         self,
         command_logits: torch.Tensor,

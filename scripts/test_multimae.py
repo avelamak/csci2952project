@@ -10,7 +10,7 @@ import sys
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 from vecssl.data.dataset import SVGXDataset
 from vecssl.models.config import MultiMAEConfig
@@ -169,6 +169,26 @@ class DebugTrainer(Trainer):
                 self._model, self._optimizer, train_loader
             )
 
+        if self.accelerator.is_main_process:
+            tracker_config = self.cfg if isinstance(self.cfg, dict) else {}
+            init_kwargs = {}
+            if self.wandb_project:
+                wandb_init = {}
+                if self.wandb_name:
+                    wandb_init["name"] = self.wandb_name
+                if self.wandb_entity:
+                    wandb_init["entity"] = self.wandb_entity
+                if wandb_init:
+                    init_kwargs["wandb"] = wandb_init
+
+            self.accelerator.init_trackers(
+                project_name=self.wandb_project or "debug-training",
+                config=tracker_config,
+                init_kwargs=init_kwargs if init_kwargs else None,
+            )
+
+        self.accelerator.wait_for_everyone()
+
         if self._scheduler is not None:
             self.scheduler = self.accelerator.prepare(self._scheduler)
 
@@ -256,14 +276,26 @@ def create_dataloaders(args):
     logger.info(f"  Train samples: {len(train_dataset)}")
     logger.info(f"  Val samples: {len(val_dataset)}")
 
+    train_shuffle = True
+    train_drop_last = True
+
+    if args.overfit_samples is not None:
+        n = args.overfit_samples
+        logger.info(f" Limiting datasets to first {n} glyphs")
+
+        train_dataset = Subset(train_dataset, list(range(min(n, len(train_dataset)))))
+        val_dataset = Subset(val_dataset, list(range(min(n, len(val_dataset)))))
+        train_shuffle = False
+        train_drop_last = False
+
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        shuffle=train_shuffle,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
-        drop_last=True,  # Drop incomplete batches
+        drop_last=train_drop_last,  # Drop incomplete batches
     )
 
     val_loader = DataLoader(
@@ -295,6 +327,25 @@ def main():
         type=str,
         default=None,
         help="Directory containing precomputed DINO patch embeddings",
+    )
+
+    parser.add_argument(
+        "--overfit_samples",
+        type=int,
+        default=None,  # None = no limit
+        help="Limit number of glyph samples (use for overfitting/debug)",
+    )
+
+    # Wandb args
+    parser.add_argument(
+        "--wandb-project",
+        type=str,
+        default="vecssl",
+        help="Wandb project name (enables wandb if set)",
+    )
+    parser.add_argument("--wandb-name", type=str, default=None, help="Wandb run name (optional)")
+    parser.add_argument(
+        "--wandb-entity", type=str, default="vecssl", help="Wandb entity/team (optional)"
     )
 
     # Model args
