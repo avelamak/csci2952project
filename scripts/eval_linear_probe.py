@@ -148,6 +148,12 @@ def main():
         default="glyph_label",
         help="Training task to predict: glyph_label for glyph label and family_label for family label",
     )
+    parser.add_argument(
+        "--min-class-count",
+        type=int,
+        default=100,
+        help="Minimum samples per class for stratified split (default: 100)",
+    )
 
     # Output args
     parser.add_argument("--tb-dir", type=str, default=None, help="TensorBoard directory")
@@ -190,6 +196,7 @@ def main():
         split="train",
         shuffle=True,
         stratify_by=stratify_by,
+        min_class_count=args.min_class_count,
     )
 
     val_loader = create_eval_dataloader(
@@ -203,6 +210,7 @@ def main():
         split="val",
         shuffle=False,
         stratify_by=stratify_by,
+        min_class_count=args.min_class_count,
     )
 
     # Determine number of classes from dataset

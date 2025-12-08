@@ -43,6 +43,7 @@ class SVGXDataset(Dataset):
         use_precomputed_dino_patches: bool = False,
         dino_patches_dir: Optional[str] = None,
         stratify_by: Optional[str] = None,
+        min_class_count: int = 2,
     ):
         self.svg_dir = svg_dir
         self.img_dir = img_dir
@@ -86,6 +87,18 @@ class SVGXDataset(Dataset):
         df_shuffled = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
 
         if stratify_by and stratify_by in df_shuffled.columns:
+            # Filter out classes with too few samples for stratified split
+            if min_class_count > 1:
+                class_counts = df_shuffled[stratify_by].value_counts()
+                valid_classes = class_counts[class_counts >= min_class_count].index
+                original_len = len(df_shuffled)
+                df_shuffled = df_shuffled[df_shuffled[stratify_by].isin(valid_classes)]
+                if len(df_shuffled) < original_len:
+                    logger.info(
+                        f"Filtered {original_len - len(df_shuffled)} samples from classes "
+                        f"with < {min_class_count} samples"
+                    )
+
             # Stratified split: ensure each class appears proportionally in all splits
             stratify_col = df_shuffled[stratify_by]
 

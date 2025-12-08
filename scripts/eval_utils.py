@@ -228,6 +228,7 @@ def create_eval_dataloader(
     seed: int = 42,
     shuffle: bool = False,
     stratify_by: str | None = None,
+    min_class_count: int = 2,
 ) -> DataLoader:
     """
     Create a dataloader for evaluation.
@@ -244,6 +245,7 @@ def create_eval_dataloader(
         seed: Random seed for reproducible splits
         shuffle: Whether to shuffle the data
         stratify_by: Column to stratify split by (e.g., "family_label")
+        min_class_count: Minimum samples per class for stratified split
 
     Returns:
         DataLoader
@@ -258,6 +260,7 @@ def create_eval_dataloader(
         seed=seed,
         already_preprocessed=True,
         stratify_by=stratify_by,
+        min_class_count=min_class_count,
     )
 
     loader = DataLoader(
