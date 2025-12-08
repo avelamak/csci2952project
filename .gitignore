@@ -8,6 +8,7 @@ datasets/
 google_fonts/
 data/
 out
+svg_recon/
 
 # PCA files
 pca_img.png
