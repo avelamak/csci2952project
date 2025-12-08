@@ -383,6 +383,99 @@ class MultiMAE(JointModel):
         return TrainStep(loss=loss, logs=logs)
 
     @torch.no_grad()
+    def greedy_reconstruct(self, batch: dict):
+        """
+        Deterministically reconstruct masked SVG groups using both
+        visible SVG groups and visible image patches.
+        """
+
+        device = next(self.parameters()).device
+
+        commands = batch["commands"].to(device)  # (N, G, S)
+        args = batch["args"].to(device)  # (N, G, S, n_args)
+
+        N, G, S = commands.shape
+
+        # 1. Encode SVG groups
+        group_embs = self.svg_group_encoder(commands, args)
+
+        # 2. Encode image patches
+        if "dino_patches" in batch:
+            img_patches = batch["dino_patches"].to(device)  # (N, P, 768)
+        else:
+            images = batch["image"].to(device)
+            img_patches = self.image_encoder(images)  # (N, P, 768)
+
+        img_tokens = self.img_proj(img_patches)  # (N, P, d_model)
+
+        # 3. SVG visibility mask
+        from vecssl.data.svg_tensor import SVGTensor
+
+        EOS_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+        svg_visibility = commands[:, :, 0] != EOS_idx  # (N, G)
+
+        # 4. Mask SVG + image
+        (
+            visible_svg,
+            svg_visible_mask,
+            masked_svg_indices,
+            svg_masked_mask,
+            svg_mask,
+        ) = self._mask_svg_groups(group_embs, svg_visibility)
+
+        visible_img, img_visible_mask = self._mask_image_patches(img_tokens)
+
+        # 5. Add modality embeddings
+        visible_svg = visible_svg + self.mod_embed_svg
+        visible_img = visible_img + self.mod_embed_img
+
+        # 6. Build encoder input: [CLS, visible_svg, visible_img]
+        cls_token = self.cls_token.expand(N, -1, -1)
+        enc_input = torch.cat([cls_token, visible_svg, visible_img], dim=1)
+
+        cls_valid = torch.ones(N, 1, dtype=torch.bool, device=device)
+        enc_key_padding_mask = ~torch.cat([cls_valid, svg_visible_mask, img_visible_mask], dim=1)
+
+        # 7. Encode
+        enc_input_sf = enc_input.transpose(0, 1)
+        memory = self.mae_encoder(
+            enc_input_sf, mask=None, src_key_padding_mask=enc_key_padding_mask, memory2=None
+        )
+        memory = memory.transpose(0, 1)
+
+        # 8. Prepare masked SVG tokens for decoder
+        num_masked = svg_masked_mask.sum(dim=1).max().item()
+        if num_masked == 0:
+            return commands, args
+
+        masked_z = self.svg_mask_token.expand(N, num_masked, -1)
+
+        # 9. Decode masked SVG groups
+        pred_cmd_logits, pred_args_logits = self.svg_decoder(
+            masked_z, memory=memory, memory_key_padding_mask=enc_key_padding_mask
+        )
+
+        # 10. Greedy decode tokens
+        pred_commands = pred_cmd_logits.argmax(dim=-1)  # (N, M, S)
+        pred_args = pred_args_logits.argmax(dim=-1) - 1  # shift back from PAD
+
+        # 11. Merge predictions back into full SVG
+        out_commands = commands.clone()
+        out_args = args.clone()
+
+        for i in range(N):
+            for j in range(num_masked):
+                if svg_masked_mask[i, j] == 0:
+                    continue
+
+                idx = masked_svg_indices[i, j].item()
+
+                out_commands[i, idx] = pred_commands[i, j]
+                out_args[i, idx] = pred_args[i, j]
+
+        return out_commands, out_args
+
+    @torch.no_grad()
     def encode_joint(self, batch: dict, use_images: bool = True) -> dict:
         """
         Encode SVG (optionally with image context) to latent embedding.

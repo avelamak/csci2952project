@@ -355,7 +355,9 @@ class DebugTrainer(Trainer):
         self.first_step_done = True
 
     @torch.no_grad()
-    def reconstruct_svgs(self, train_loader, epochs, batch=None, out_dir="svg_recon"):
+    def reconstruct_svgs(
+        self, train_loader, epochs, batch=None, num_samps=None, out_dir="svg_recon"
+    ):
         if not self.accelerator.is_main_process:
             return None
 
@@ -367,7 +369,9 @@ class DebugTrainer(Trainer):
         self.model.eval()
         unwrapped_model = self.accelerator.unwrap_model(self.model)
 
-        epoch_dir = Path(out_dir) / f"epoch_{epochs:03d}"
+        epoch_dir = Path(out_dir) / f"svgmae_epoch_{epochs:03d}"
+        if num_samps:
+            epoch_dir = Path(out_dir) / f"svgmae_samps_{num_samps:03d}_epoch_{epochs:03d}"
         epoch_dir.mkdir(parents=True, exist_ok=True)
 
         # Call visualize_batch
@@ -678,7 +682,9 @@ def main():
 
     logger.info("Checking recon quality")
     try:
-        trainer.reconstruct_svgs(train_loader=train_loader, epochs=args.epochs)
+        trainer.reconstruct_svgs(
+            train_loader=train_loader, epochs=args.epochs, num_samps=args.overfit_samples
+        )
         logger.info(
             "[bold green]✓ Recon completed successfully SVGs saved to: ![/bold green]",
             extra={"markup": True},
