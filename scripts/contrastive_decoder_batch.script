@@ -37,8 +37,8 @@
 source .venv/bin/activate
 wandb login
 
-accelerate launch --num_processes=2 scripts/train_decoder_from_jepa.py \
-    --jepa-checkpoint checkpoints/jepa/best_model.pt \
+accelerate launch --num_processes=2 scripts/train_decoder_from_contrastive.py \
+    --jepa-checkpoint checkpoints/contrastive/best_model.pt \
     --svg-dir data/fonts/svg \
     --img-dir data/fonts/img \
     --meta data/fonts/metadata.csv \
@@ -46,9 +46,9 @@ accelerate launch --num_processes=2 scripts/train_decoder_from_jepa.py \
     --epoch 100 \
     --lr 1e-4 \
     --num-workers 0 \
-    --wandb-project vecssl_jepa_decoder \
-    --wandb-name jepa_default_decoder \
+    --wandb-project vecssl_contrastive_decoder \
+    --wandb-name jepa_contrastive_decoder \
     --wandb-entity vecssl \
-    --checkpoint-dir ./checkpoints/jepa_decoder \
+    --checkpoint-dir ./checkpoints/contrastive_decoder \
     --log-every 1 \
     --save-every 1
