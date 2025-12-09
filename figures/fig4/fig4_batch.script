@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# This is an example batch script for slurm on Oscar
+#
+# The commands for slurm start with #SBATCH
+# All slurm commands need to come before the program
+# you want to run.  In this example, 'echo "Hello World!"
+# is the command we are running.
+#
+# This is a bash script, so any line that starts with # is
+# a comment.  If you need to comment out an #SBATCH line
+# use ##SBATCH
+#
+# To submit this script to slurm do:
+#    sbatch batch.script
+#
+# Once the job starts you will see a file MySerialJob-****.out
+# The **** will be the slurm JobID
+
+# --- Start of slurm commands -----------
+
+#SBATCH --time=24:00:00
+
+#SBATCH --mem=64G
+#SBATCH --cpus-per-task=6
+#SBATCH --partition=gpu
+#SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+
+#SBATCH -J PCA
+#SBATCH -o PCA-%j.out
+#SBATCH -e PCA-%j.err
+
+#----- End of slurm commands ----
+
+source .venv/bin/activate
+
+export WANDB_API_KEY=05578ca0e5ad3d2c20ce19436f1b8db1f1f25713
+wandb login
+
+python figures/fig4/fig4.py \
+ --svg-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/svg \
+ --img-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/img \
+ --meta /oscar/scratch/zzhan215/google_fonts_processed_reduced/metadata.csv \
+ --model-checkpoints \
+     /oscar/scratch/zzhan215/exps/contrastive/best_model.pt \
+     /oscar/scratch/zzhan215/exps/contrastive_7/best_model.pt \
+     /oscar/scratch/zzhan215/exps/contrastive_temp/best_model.pt \
+     /oscar/scratch/zzhan215/exps/contrastive_temp_7/best_model.pt \
+     /oscar/scratch/zzhan215/exps/jepa/best_model.pt \
+     /oscar/scratch/zzhan215/exps/jepa_7/best_model.pt \
+     /oscar/scratch/zzhan215/exps/jepa_default/best_model.pt \
+     /oscar/scratch/zzhan215/exps/jepa_layer/best_model.pt \
+     /oscar/scratch/zzhan215/exps/jepa_layer_7/best_model.pt \
+     /oscar/scratch/zzhan215/exps/multimae/best_model.pt \
+     /oscar/scratch/zzhan215/exps/svgvae/best_model.pt \
+ --model-types contrastive contrastive contrastive contrastive jepa jepa jepa jepa jepa multimae svgmae \
+ --model-labels contrastive contrastive_7 contrastive_temp contrastive_temp_7 jepa jepa_7 jepa_default jepa_layer jepa_layer_7 multimae svgmae
