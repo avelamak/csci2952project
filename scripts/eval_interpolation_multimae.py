@@ -123,44 +123,41 @@ def load_multimae(checkpoint_path: Path, device: torch.device):
 def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
     """
     Decode commands and args tensors back to an SVG object.
-    Filters out SOS/EOS/PAD tokens.
+
+    Args:
+        commands: [S] or [G, S] long tensor of command indices
+        args: [S, 11] or [G, S, 11] float tensor of arguments
+        viewbox_size: Size of the SVG viewbox
+        pad_val: Padding value used
+
+    Returns:
+        SVG object
     """
+    # Handle multi-group case
     if commands.ndim == 2:
         commands = commands[0]
         args = args[0]
 
-    commands = commands.detach().cpu().long()
+    commands = commands.detach().cpu()
     args = args.detach().cpu().float()
 
-    cmd_vocab = SVGTensor.COMMANDS_SIMPLIFIED
-    try:
-        SOS_idx = cmd_vocab.index("SOS")
-    except ValueError:
-        SOS_idx = -999
-    try:
-        EOS_idx = cmd_vocab.index("EOS")
-    except ValueError:
-        EOS_idx = -999
+    # Find actual sequence length (before EOS/padding)
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+    valid_mask = (commands != pad_val) & (commands != eos_idx)
 
-    valid_cmds = []
-    valid_args = []
+    if valid_mask.any():
+        seq_len = valid_mask.long().sum().item()
+    else:
+        seq_len = 0
 
-    for i, c_idx in enumerate(commands.tolist()):
-        if c_idx == EOS_idx:
-            break
-        if c_idx == SOS_idx or c_idx == pad_val or c_idx < 0:
-            continue
-        valid_cmds.append(c_idx)
-        valid_args.append(args[i])
-
-    if len(valid_cmds) == 0:
+    if seq_len == 0:
         return SVG([], viewbox=Bbox(viewbox_size))
 
-    commands_t = torch.tensor(valid_cmds, dtype=torch.long)
-    args_t = torch.stack(valid_args)
+    commands = commands[:seq_len]
+    args = args[:seq_len]
 
     try:
-        svg_tensor = SVGTensor.from_cmd_args(commands_t, args_t, PAD_VAL=pad_val)
+        svg_tensor = SVGTensor.from_cmd_args(commands, args, PAD_VAL=pad_val)
         tensor_data = svg_tensor.data
         svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
     except Exception as e:
@@ -168,6 +165,56 @@ def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SV
         svg = SVG([], viewbox=Bbox(viewbox_size))
 
     return svg
+
+
+# def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
+#     """
+#     Decode commands and args tensors back to an SVG object.
+#     Filters out SOS/EOS/PAD tokens.
+#     """
+#     if commands.ndim == 2:
+#         commands = commands[0]
+#         args = args[0]
+
+#     commands = commands.detach().cpu().long()
+#     args = args.detach().cpu().float()
+
+#     cmd_vocab = SVGTensor.COMMANDS_SIMPLIFIED
+#     try:
+#         SOS_idx = cmd_vocab.index("SOS")
+#     except ValueError:
+#         SOS_idx = -999
+#     try:
+#         EOS_idx = cmd_vocab.index("EOS")
+#     except ValueError:
+#         EOS_idx = -999
+
+#     valid_cmds = []
+#     valid_args = []
+
+#     for i, c_idx in enumerate(commands.tolist()):
+#         if c_idx == EOS_idx:
+#             break
+#         if c_idx == SOS_idx or c_idx == pad_val or c_idx < 0:
+#             continue
+#         valid_cmds.append(c_idx)
+#         valid_args.append(args[i])
+
+#     if len(valid_cmds) == 0:
+#         return SVG([], viewbox=Bbox(viewbox_size))
+
+#     commands_t = torch.tensor(valid_cmds, dtype=torch.long)
+#     args_t = torch.stack(valid_args)
+
+#     try:
+#         svg_tensor = SVGTensor.from_cmd_args(commands_t, args_t, PAD_VAL=pad_val)
+#         tensor_data = svg_tensor.data
+#         svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
+#     except Exception as e:
+#         logger.warning(f"Failed to decode SVG: {e}")
+#         svg = SVG([], viewbox=Bbox(viewbox_size))
+
+#     return svg
 
 
 @torch.no_grad()
