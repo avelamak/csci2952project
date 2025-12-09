@@ -21,15 +21,15 @@
 
 #SBATCH --time=24:00:00
 
-#SBATCH --mem=64G
-#SBATCH --cpus-per-task=6
+#SBATCH --mem=128G
+#SBATCH --cpus-per-task=12
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --nodes=1
 
-#SBATCH -J JEPA
-#SBATCH -o JEPA-%j.out
-#SBATCH -e JEPA-%j.err
+#SBATCH -J Contrastive
+#SBATCH -o Contrastive-%j.out
+#SBATCH -e Contrastive-%j.err
 
 #----- End of slurm commands ----
 
@@ -38,16 +38,16 @@ source .venv/bin/activate
 wandb login
 
 accelerate launch --num_processes=2 scripts/train_decoder_from_contrastive.py \
-    --jepa-checkpoint checkpoints/contrastive/best_model.pt \
-    --svg-dir data/fonts/svg \
-    --img-dir data/fonts/img \
-    --meta data/fonts/metadata.csv \
+    --contrastive-checkpoint /oscar/scratch/zzhan215/exps/contrastive/best_model.pt \
+    --svg-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/svg/ \
+    --img-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/img/ \
+    --meta /oscar/scratch/zzhan215/google_fonts_processed_reduced/metadata.csv \
     --batch-size 128 \
     --epoch 100 \
     --lr 1e-4 \
     --num-workers 0 \
     --wandb-project vecssl_contrastive_decoder \
-    --wandb-name jepa_contrastive_decoder \
+    --wandb-name contrastive_decoder \
     --wandb-entity vecssl \
     --checkpoint-dir ./checkpoints/contrastive_decoder \
     --log-every 1 \

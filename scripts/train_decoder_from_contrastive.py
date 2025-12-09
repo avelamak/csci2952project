@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def load_checkpoint(ckpt_path: Path) -> tuple[Contrastive, ContrastiveConfig]:
+def load_contrastive_checkpoint(ckpt_path: Path) -> tuple[Contrastive, ContrastiveConfig]:
     """
     Load Contrastive checkpoint and return (model, config).
     """
@@ -135,7 +135,7 @@ def transfer_encoder_weights(contrastive: ContrastiveModel, ae_model: SimpleSVGA
     Copy svg_encoder weights from Contrastive to SVGTransformer.encoder.
     """
     logger.info("Transferring encoder weights from Contrastive")
-    contrastive_encoder_state = contrastive.svg_encoder.state_dict()
+    contrastive_encoder_state = contrastive.encoder.state_dict()
     ae_model.model.encoder.load_state_dict(contrastive_encoder_state, strict=False)
     logger.info("Transferred %d encoder parameter tensors", len(contrastive_encoder_state))
 
