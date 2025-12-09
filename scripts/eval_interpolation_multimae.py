@@ -141,20 +141,17 @@ def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SV
     commands = commands.detach().cpu()
     args = args.detach().cpu().float()
 
-    # Find actual sequence length (before EOS/padding)
+    # Filter out special tokens (SOS, EOS, padding)
     eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
-    valid_mask = (commands != pad_val) & (commands != eos_idx)
+    sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
+    valid_mask = (commands != pad_val) & (commands != eos_idx) & (commands != sos_idx)
 
-    if valid_mask.any():
-        seq_len = valid_mask.long().sum().item()
-    else:
-        seq_len = 0
-
-    if seq_len == 0:
+    if not valid_mask.any():
         return SVG([], viewbox=Bbox(viewbox_size))
 
-    commands = commands[:seq_len]
-    args = args[:seq_len]
+    # Use mask to filter out invalid tokens
+    commands = commands[valid_mask]
+    args = args[valid_mask]
 
     try:
         svg_tensor = SVGTensor.from_cmd_args(commands, args, PAD_VAL=pad_val)
