@@ -39,6 +39,7 @@ import torch
 from vecssl.data.dataset import SVGXDataset
 from vecssl.data.geom import Bbox
 from vecssl.data.svg import SVG
+from vecssl.data.svg_path import SVGPath
 from vecssl.data.svg_tensor import SVGTensor
 from vecssl.models.config import MultiMAEConfig
 from vecssl.models.multimae import MultiMAE
@@ -145,39 +146,51 @@ def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SV
 
     Filters out SOS/EOS/PAD tokens.
 
-    Note:
-        - If commands has shape (G, S), this currently decodes ONLY the first group.
-          This is enough to sanity-check recon on single-path glyphs.
-          You can extend this to draw all groups if desired.
+    Supports both single-group (S,) and multi-group (G, S) tensors.
+    For multi-group input, all groups are decoded and combined into one SVG.
     """
-    # Handle multi-group case: use group 0
-    if commands.ndim == 2:
-        commands = commands[0]
-        args = args[0]
-
     commands = commands.detach().cpu().long()
     args = args.detach().cpu().float()
 
     eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
     sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
 
-    valid_mask = (commands != pad_val) & (commands != eos_idx) & (commands != sos_idx)
+    # Handle both (S,) and (G, S) shapes
+    if commands.ndim == 1:
+        commands_list = [commands]
+        args_list = [args]
+    else:
+        # Multi-group case (G, S) and (G, S, n_args)
+        commands_list = list(commands)
+        args_list = list(args)
 
-    if not valid_mask.any():
+    # Decode each group
+    svg_path_groups = []
+    for cmd, arg in zip(commands_list, args_list, strict=False):
+        # Filter out SOS/EOS/PAD tokens
+        valid_mask = (cmd != pad_val) & (cmd != eos_idx) & (cmd != sos_idx)
+
+        if not valid_mask.any():
+            # Empty group - skip
+            continue
+
+        cmd_valid = cmd[valid_mask]
+        arg_valid = arg[valid_mask]
+
+        try:
+            svg_tensor = SVGTensor.from_cmd_args(cmd_valid, arg_valid, PAD_VAL=pad_val)
+            tensor_data = svg_tensor.data
+            # SVGPath.from_tensor returns an SVGPathGroup
+            svg_path_group = SVGPath.from_tensor(tensor_data, allow_empty=True)
+            svg_path_groups.append(svg_path_group)
+        except Exception as e:
+            logger.warning(f"Failed to decode group: {e}")
+            continue
+
+    if not svg_path_groups:
         return SVG([], viewbox=Bbox(viewbox_size))
 
-    commands = commands[valid_mask]
-    args = args[valid_mask]
-
-    try:
-        svg_tensor = SVGTensor.from_cmd_args(commands, args, PAD_VAL=pad_val)
-        tensor_data = svg_tensor.data
-        svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
-    except Exception as e:
-        logger.warning(f"Failed to decode SVG: {e}")
-        svg = SVG([], viewbox=Bbox(viewbox_size))
-
-    return svg
+    return SVG(svg_path_groups, viewbox=Bbox(viewbox_size))
 
 
 # ---------------------------------------------------------
