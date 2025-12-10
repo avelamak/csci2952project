@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 from accelerate import Accelerator
-from accelerate.utils import ProjectConfiguration
+from accelerate.utils import ProjectConfiguration, DistributedDataParallelKwargs
 
 from vecssl.util import make_progress
 
@@ -55,11 +55,14 @@ class Trainer:
                 logging_dir=tb_dir,
             )
 
-        # Create Accelerator
+        # Create Accelerator with find_unused_parameters=True for DDP
+        # (needed because MultiMAE's dynamic masking can skip some params on certain steps)
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
         self.accelerator = Accelerator(
             mixed_precision=mixed_precision,
             log_with=log_with if log_with else None,
             project_config=project_config,
+            kwargs_handlers=[ddp_kwargs],
         )
 
         # These will be set in run() after prepare()
