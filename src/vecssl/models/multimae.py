@@ -407,27 +407,21 @@ class MultiMAE(JointModel):
         pred_args[~mask] = -1
 
         # Reconstruct
-        # Explicit dtypes for output buffers
-        final_cmd = torch.zeros_like(commands, dtype=torch.long)
-        final_args = torch.zeros_like(args, dtype=torch.float)
+        # Start from GT everywhere, then overwrite only masked groups
+        # This preserves EOS tokens in padded groups (preventing spurious paths)
+        final_cmd = commands.clone().long()
+        final_args = args.clone().float()
 
         for i in range(N):
-            # n_mask = svg_mask_tokens.shape[1]
-
             real_n_mask = (~mask_tokens_pad_mask[i]).sum().item()
             real_n_vis = (~svg_pad_mask[i]).sum().item()
 
-            ids_shuffle_i = ids_restore_svg[i].argsort()
+            ids_shuffle_i = ids_restore_svg[i].argsort()  # == original ids_shuffle
 
-            idx_keep = ids_shuffle_i[:real_n_vis]
+            # Masked indices, only these get predictions
             idx_mask = ids_shuffle_i[real_n_vis : real_n_vis + real_n_mask]
 
-            # 1. Place Visible
-            final_cmd[i, idx_keep] = commands[i, idx_keep]
-            final_args[i, idx_keep] = args[i, idx_keep]
-
-            # 2. Place Predicted
-            # Explicit casts to match destination dtypes
+            # Only overwrite masked groups (visible groups already have GT from clone)
             final_cmd[i, idx_mask] = pred_cmd[i, :real_n_mask].long()
             final_args[i, idx_mask] = pred_args[i, :real_n_mask].float()
 
