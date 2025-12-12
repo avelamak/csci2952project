@@ -44,7 +44,7 @@ def decode_svg_from_cmd_args(
         commands: [S] or [G, S] long tensor of command indices
         args: [S, 11] or [G, S, 11] float tensor of arguments
         viewbox_size: Size of the SVG viewbox (default 256)
-        pad_val: Padding value used (default -1)
+        pad_val: Padding value for args (default -1)
 
     Returns:
         SVG object that can be saved via .save_svg()
@@ -57,24 +57,20 @@ def decode_svg_from_cmd_args(
     commands = commands.detach().cpu()
     args = args.detach().cpu().float()
 
-    # Find actual sequence length (filter out EOS, SOS, and padding)
+    # Get special token indices from COMMANDS_SIMPLIFIED
+    pad_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("PAD")
     eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
     sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
-    valid_mask = (commands != pad_val) & (commands != eos_idx) & (commands != sos_idx)
 
-    if valid_mask.any():
-        # Find last valid command
-        seq_len = valid_mask.long().sum().item()
-    else:
-        seq_len = 0
+    # Keep only "real" drawing commands (exclude PAD, SOS, EOS tokens)
+    mask = (commands != pad_idx) & (commands != eos_idx) & (commands != sos_idx)
 
-    if seq_len == 0:
-        # Return empty SVG
+    if not mask.any():
         return SVG([], viewbox=Bbox(viewbox_size))
 
-    # Truncate to valid length
-    commands = commands[:seq_len]
-    args = args[:seq_len]
+    # Select only valid positions (not first N elements!)
+    commands = commands[mask]
+    args = args[mask]
 
     # Create SVGTensor from commands and args
     svg_tensor = SVGTensor.from_cmd_args(
@@ -193,14 +189,13 @@ def reconstruct_batch(model, batch, device):
     return commands_y.cpu(), args_y.cpu(), commands.cpu(), args.cpu()
 
 
-def command_accuracy(pred_cmds, tgt_cmds, pad_val=-1):
+def command_accuracy(pred_cmds, tgt_cmds):
     """
-    Compute command token accuracy.
+    Compute command token accuracy (excluding PAD, SOS, EOS tokens).
 
     Args:
         pred_cmds: [B, G, S] predicted commands
         tgt_cmds: [B, G, S] target commands
-        pad_val: Padding value to ignore
 
     Returns:
         float: Accuracy
@@ -210,8 +205,13 @@ def command_accuracy(pred_cmds, tgt_cmds, pad_val=-1):
     pred = pred_cmds[..., :S]
     tgt = tgt_cmds[..., :S]
 
-    # Create mask for valid (non-padded) positions
-    mask = tgt != pad_val
+    # Get special token indices
+    pad_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("PAD")
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+    sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
+
+    # Create mask for valid drawing commands (exclude special tokens)
+    mask = (tgt != pad_idx) & (tgt != eos_idx) & (tgt != sos_idx)
     correct = (pred == tgt) & mask
 
     acc = correct.sum().float() / mask.sum().clamp(min=1)
@@ -310,7 +310,7 @@ def main():
     for batch in loader:
         pred_cmds, pred_args, tgt_cmds, tgt_args = reconstruct_batch(model, batch, device)
 
-        ca = command_accuracy(pred_cmds, tgt_cmds, pad_val=-1)
+        ca = command_accuracy(pred_cmds, tgt_cmds)
         l1, l2 = arg_errors(pred_args, tgt_args, pad_val=-1)
 
         total_cmd_acc += ca
