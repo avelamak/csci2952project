@@ -252,15 +252,16 @@ def build_decoder_config(multimae_cfg: MultiMAEConfig) -> _DefaultConfig:
     cfg.decode_stages = 2  # 2-stage hierarchical decoding
     cfg.use_vae = False  # No VAE (CLS is already deterministic)
     cfg.n_layers_decode = getattr(multimae_cfg, "n_layers_decode", 4)
-    cfg.pred_mode = "autoregressive"
+    cfg.pred_mode = "one_shot"
     cfg.self_match = False
     cfg.num_groups_proposal = cfg.max_num_groups
 
     logger.info(
-        "Built decoder config: encode_stages=%d decode_stages=%d dim_z=%d",
+        "Built decoder config: encode_stages=%d decode_stages=%d dim_z=%d pred_mode=%s",
         cfg.encode_stages,
         cfg.decode_stages,
         cfg.dim_z,
+        cfg.pred_mode,
     )
     return cfg
 
@@ -412,6 +413,8 @@ def main() -> None:
 
     args.max_num_groups = multimae_cfg.max_num_groups
     args.max_seq_len = multimae_cfg.max_seq_len
+    
+    logger.info(f"Training with {args.max_num_groups}")
 
     # 3. Build decoder config
     decoder_cfg = build_decoder_config(multimae_cfg)

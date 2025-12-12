@@ -114,18 +114,19 @@ def build_ae_config_from_jepa(jepa_cfg: JepaConfig) -> _DefaultConfig:
     # Decoder / autoencoder settings
     cfg.encode_stages = 2
     cfg.decode_stages = 2
-    cfg.use_vae = True
+    cfg.use_vae = True  # JEPA doesn't use VAE so this doesn't matter
     cfg.n_layers_decode = getattr(jepa_cfg, "n_layers_decode", 4)
-    cfg.pred_mode = "autoregressive"
+    cfg.pred_mode = "one_shot"
     cfg.self_match = False
     cfg.num_groups_proposal = cfg.max_num_groups
 
     logger.info(
-        "Built AE config: encode_stages=%d decode_stages=%d use_vae=%s dim_z=%d",
+        "Built AE config: encode_stages=%d decode_stages=%d use_vae=%s dim_z=%d pred_mode=%s",
         cfg.encode_stages,
         cfg.decode_stages,
         cfg.use_vae,
         cfg.dim_z,
+        cfg.pred_mode,
     )
     return cfg
 
@@ -348,6 +349,8 @@ def main() -> None:
     # Store for dataloader
     args.max_num_groups = jepa_cfg.max_num_groups
     args.max_seq_len = jepa_cfg.max_seq_len
+
+    logger.info(f"Training with {args.max_num_groups=}, {args.max_seq_len=}")
 
     # 3. Build autoencoder config
     cfg = build_ae_config_from_jepa(jepa_cfg)

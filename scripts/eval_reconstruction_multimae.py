@@ -46,7 +46,7 @@ from vecssl.models.multimae import MultiMAE
 from vecssl.models.model import SVGTransformer
 from vecssl.models.loss import SVGLoss
 from vecssl.util import setup_logging
-
+from eval_reconstruction import decode_svg_from_cmd_args
 import cairosvg
 
 logger = logging.getLogger(__name__)
@@ -184,10 +184,11 @@ def load_decoder_from_multimae(checkpoint_path: Path, device: torch.device):
         # Use defaults
         logger.warning("No decoder config in checkpoint, using defaults")
         decoder_cfg = _DefaultConfig()
-        decoder_cfg.encode_stages = 2
+        decoder_cfg.encode_stages = 0
         decoder_cfg.decode_stages = 2
         decoder_cfg.use_vae = False
         decoder_cfg.pred_mode = "one_shot"
+        decoder_cfg.max_seq_len = 40  # !
 
     # Create model
     frozen_encoder = MultiMAE(multimae_cfg)
@@ -208,7 +209,7 @@ def load_decoder_from_multimae(checkpoint_path: Path, device: torch.device):
     return model, decoder_cfg
 
 
-def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
+def _decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
     """
     Decode commands and args tensors back to an SVG object.
 
@@ -330,7 +331,7 @@ def decode_z(
         commands_enc=None,
         args_enc=None,
         z=z,
-        concat_groups=True,
+        concat_groups=False,
         temperature=temperature,
     )
     return commands_y, args_y
@@ -516,7 +517,7 @@ def main():
 
     # Batch mode args
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size (batch mode)")
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
 
     # Runtime
     parser.add_argument("--device", type=str, default="cuda", help="Device")

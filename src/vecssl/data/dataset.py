@@ -97,6 +97,7 @@ class SVGXDataset(Dataset):
                     logger.info(
                         f"Filtered {original_len - len(df_shuffled)} samples from classes "
                         f"with < {min_class_count} samples"
+                        f"with {len(valid_classes)} classes"
                     )
 
             # Stratified split: ensure each class appears proportionally in all splits
@@ -228,7 +229,7 @@ class SVGXDataset(Dataset):
                 # --- Image as compressed bytes ---
                 img_path = os.path.join(self.img_dir, f"{uuid}.png")
                 img_bytes = Path(img_path).read_bytes()
-
+            
                 # --- DINO CLS embedding ---
                 dino_embedding = None
                 if self.use_precomputed_dino:

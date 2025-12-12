@@ -148,7 +148,7 @@ class Jepa(JointModel):
             z_img = batch["dino_embedding"].to(device)
         else:
             images = batch["image"].to(device)
-            z_img = self.image_encoder(images)
-        z_img = F.normalize(z_img, dim=-1)
-
+            #z_img = self.image_encoder(images)
+        #z_img = F.normalize(z_img, dim=-1)
+        z_img = None
         return {"svg": z_svg, "img": z_img}

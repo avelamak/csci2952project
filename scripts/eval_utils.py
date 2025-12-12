@@ -229,6 +229,7 @@ def create_eval_dataloader(
     shuffle: bool = False,
     stratify_by: str | None = None,
     min_class_count: int = 2,
+    cache: bool = False,
 ) -> DataLoader:
     """
     Create a dataloader for evaluation.
@@ -259,6 +260,7 @@ def create_eval_dataloader(
         split=split,
         seed=seed,
         already_preprocessed=True,
+        cache=cache,
         stratify_by=stratify_by,
         min_class_count=min_class_count,
     )
@@ -283,12 +285,12 @@ def add_common_args(parser):
     parser.add_argument("--img-dir", type=str, required=True, help="Image directory")
     parser.add_argument("--meta", type=str, required=True, help="Metadata CSV")
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max path groups")
-    parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
+    parser.add_argument("--max-seq-len", type=int, default=60, help="Max sequence length")
 
     # Runtime args
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
+    parser.add_argument("--num-workers", type=int, default=0, help="DataLoader workers")
     parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
-
+    parser.add_argument("--cache", action="store_true") 
     return parser

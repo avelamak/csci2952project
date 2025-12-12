@@ -18,7 +18,7 @@ class _DefaultConfig:
         self.model_type = "transformer"  # "transformer" ("lstm" implementation is work in progress)
 
         self.encode_stages = 2  # One-stage or two-stage: 1 | 2
-        self.decode_stages = 1  # One-stage or two-stage: 1 | 2
+        self.decode_stages = 2  # One-stage or two-stage: 1 | 2
 
         self.use_resnet = True  # Use extra fully-connected residual blocks after Encoder
 
@@ -46,7 +46,7 @@ class _DefaultConfig:
         self.dim_z = 256  # Latent vector dimensionality
 
         self.max_num_groups = 8  # Number of paths (N_P)
-        self.max_seq_len = 30  # Number of commands (N_C)
+        self.max_seq_len = 60  # Number of commands (N_C)
         self.max_total_len = (
             self.max_num_groups * self.max_seq_len
         )  # Concatenated sequence length for baselines
@@ -55,7 +55,7 @@ class _DefaultConfig:
 
         self.lr = 1e-4
         self.batch_size = 64
-        self.epochs = 100
+        self.epochs = 200
 
         self.DINO_layer = -1  # DINO layer to use (-1 is the last layer)
 

@@ -54,11 +54,19 @@ def decode_svg_from_cmd_args(
     args = args.detach().cpu().float()
 
     # Strip batch dim if present: [B, G, S] -> [G, S]
+    print(f"{commands.shape=}")
+    print(f"{args.shape=}")
+    print(f"{commands=}")
+    print(f"{args}")
     if commands.ndim == 3:
         commands = commands[0]
         args = args[0]
-
     # If grouped, flatten (G, S) -> T
+    print(f"{commands.shape=}")
+    print(f"{args.shape=}")
+    print(f"{commands=}")
+    print(f"{args}")
+    # If we have groups [G, S], flatten to [T]
     if commands.ndim == 2:
         G, S = commands.shape
         commands = commands.reshape(-1)  # [T]
@@ -91,11 +99,7 @@ def decode_svg_from_cmd_args(
         # Nothing real to draw
         return SVG([], viewbox=Bbox(viewbox_size))
 
-    svg_tensor = SVGTensor.from_cmd_args(
-        commands,
-        args,
-        PAD_VAL=pad_val,
-    )
+    svg_tensor = SVGTensor.from_cmd_args(commands, args, PAD_VAL=pad_val)
 
     svg = SVG.from_tensor(
         svg_tensor.data,
