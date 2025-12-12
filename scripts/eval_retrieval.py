@@ -64,7 +64,7 @@ def compute_all_embeddings(
     model.to(device)
 
     svg_embeddings = []
-    img_embeddings = []
+    # img_embeddings = []
     labels = []
     uuids = []
 
@@ -88,10 +88,10 @@ def compute_all_embeddings(
 
         # Normalize and move to CPU immediately
         z_svg = F.normalize(joint["svg"], dim=-1).cpu()
-        z_img = F.normalize(joint["img"], dim=-1).cpu()
+        # z_img = F.normalize(joint["img"], dim=-1).cpu()
 
         svg_embeddings.append(z_svg)
-        img_embeddings.append(z_img)
+        # img_embeddings.append(z_img)
         labels.extend(batch["label"].tolist())
         uuids.extend(batch["uuid"])
 
@@ -114,10 +114,10 @@ def compute_all_embeddings(
             break
 
     z_svg = torch.cat(svg_embeddings, dim=0)
-    z_img = torch.cat(img_embeddings, dim=0)
+    # z_img = torch.cat(img_embeddings, dim=0)
 
     logger.info(f"Computed {z_svg.size(0)} embeddings (dim={z_svg.size(1)})")
-    return z_svg, z_img, labels, uuids
+    return z_svg, None, labels, uuids
 
 
 def precision_at_k(
