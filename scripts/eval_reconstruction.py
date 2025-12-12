@@ -34,54 +34,51 @@ logger = logging.getLogger(__name__)
 def decode_svg_from_cmd_args(
     commands: torch.Tensor,
     args: torch.Tensor,
-    viewbox_size: int = 256,  # Match ARGS_DIM quantization range
+    viewbox_size: int = 256,
     pad_val: int = -1,
 ) -> SVG:
     """
-    Decode commands and args tensors back to an SVG object.
+    Decode commands and args back to an SVG object, consistent with DeepSVG decode.
+
+    Flattens all groups into a single sequence and lets SVGTensor handle
+    special tokens (EOS/SOS/z) internally.
 
     Args:
-        commands: [S] or [G, S] long tensor of command indices
-        args: [S, 11] or [G, S, 11] float tensor of arguments
+        commands: [T], [G, S], or [B, G, S] long tensor of command indices
+        args: [T, n_args], [G, S, n_args], or [B, G, S, n_args] float tensor
         viewbox_size: Size of the SVG viewbox (default 256)
         pad_val: Padding value for args (default -1)
 
     Returns:
         SVG object that can be saved via .save_svg()
     """
-    # If we have multiple groups, just take the first one for debugging
-    if commands.ndim == 2:
+    # Strip batch dim if present: [B, G, S] -> [G, S]
+    if commands.ndim == 3:
         commands = commands[0]
         args = args[0]
 
+    # If we have groups [G, S], flatten to [T]
+    if commands.ndim == 2:
+        G, S = commands.shape
+        commands = commands.reshape(-1)  # [T]
+        args = args.reshape(-1, args.size(-1))  # [T, n_args]
+
+    # Now commands: [T], args: [T, n_args] - what SVGTensor expects
     commands = commands.detach().cpu()
-    args = args.detach().cpu().float()
+    args = args.detach().cpu()
 
-    # Get special token indices from COMMANDS_SIMPLIFIED
-    pad_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("PAD")
-    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
-    sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
-
-    # Keep only "real" drawing commands (exclude PAD, SOS, EOS tokens)
-    mask = (commands != pad_idx) & (commands != eos_idx) & (commands != sos_idx)
-
-    if not mask.any():
-        return SVG([], viewbox=Bbox(viewbox_size))
-
-    # Select only valid positions (not first N elements!)
-    commands = commands[mask]
-    args = args[mask]
-
-    # Create SVGTensor from commands and args
-    svg_tensor = SVGTensor.from_cmd_args(
+    # Let SVGTensor handle special tokens (EOS/SOS/z) internally
+    tensor_pred = SVGTensor.from_cmd_args(
         commands,
         args,
         PAD_VAL=pad_val,
     )
 
-    # Get full data tensor (14 columns) and convert to SVG
-    tensor_data = svg_tensor.data
-    svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
+    svg = SVG.from_tensor(
+        tensor_pred.data,
+        viewbox=Bbox(viewbox_size),
+        allow_empty=True,
+    )
 
     return svg
 
@@ -189,9 +186,12 @@ def reconstruct_batch(model, batch, device):
     return commands_y.cpu(), args_y.cpu(), commands.cpu(), args.cpu()
 
 
-def command_accuracy(pred_cmds, tgt_cmds):
+def command_accuracy(pred_cmds: torch.Tensor, tgt_cmds: torch.Tensor) -> float:
     """
-    Compute command token accuracy (excluding PAD, SOS, EOS tokens).
+    Compute command token accuracy over real drawing commands (m, l, c, a).
+
+    COMMANDS_SIMPLIFIED = ["m", "l", "c", "a", "EOS", "SOS", "z"]
+    Real commands have indices 0-3 (< EOS index).
 
     Args:
         pred_cmds: [B, G, S] predicted commands
@@ -205,15 +205,11 @@ def command_accuracy(pred_cmds, tgt_cmds):
     pred = pred_cmds[..., :S]
     tgt = tgt_cmds[..., :S]
 
-    # Get special token indices
-    pad_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("PAD")
-    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
-    sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
+    # Real commands are indices 0-3 (m, l, c, a), anything >= EOS is special
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")  # 4
+    mask = tgt < eos_idx
 
-    # Create mask for valid drawing commands (exclude special tokens)
-    mask = (tgt != pad_idx) & (tgt != eos_idx) & (tgt != sos_idx)
     correct = (pred == tgt) & mask
-
     acc = correct.sum().float() / mask.sum().clamp(min=1)
     return acc.item()
 
