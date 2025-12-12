@@ -57,9 +57,10 @@ def decode_svg_from_cmd_args(
     commands = commands.detach().cpu()
     args = args.detach().cpu().float()
 
-    # Find actual sequence length (before EOS/padding)
+    # Find actual sequence length (filter out EOS, SOS, and padding)
     eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
-    valid_mask = (commands != pad_val) & (commands != eos_idx)
+    sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
+    valid_mask = (commands != pad_val) & (commands != eos_idx) & (commands != sos_idx)
 
     if valid_mask.any():
         # Find last valid command
