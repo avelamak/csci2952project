@@ -28,6 +28,7 @@ import torch
 import torch.nn.functional as F
 
 from vecssl.util import setup_logging
+from vecssl.data.svg import SVG
 
 from eval_utils import (
     add_common_args,
@@ -127,7 +128,8 @@ def precision_at_k(
     ks: tuple = (1, 5, 10),
     exclude_self: bool = False,
     chunk_size: int = 256,
-) -> dict:
+    return_topk_indices: bool = False,
+) -> dict | tuple[dict, list]:
     """
     Compute Precision@k for retrieval in a memory-efficient way by batching queries.
 
@@ -141,9 +143,11 @@ def precision_at_k(
         ks: tuple of k values to compute
         exclude_self: if True and N_q == N_g, exclude self-matches for same-modal retrieval
         chunk_size: number of queries per similarity batch
+        return_topk_indices: if True, also return top-k gallery indices per query
 
     Returns:
         dict: {k: precision} for each k
+        If return_topk_indices=True, also returns list of (query_idx, [gallery_indices])
     """
     assert query_embeddings.dim() == 2 and gallery_embeddings.dim() == 2
     assert query_embeddings.size(1) == gallery_embeddings.size(1)
@@ -161,6 +165,9 @@ def precision_at_k(
 
     # Accumulators for precision
     precision_accum = {k: [] for k in ks}
+
+    # Collect top-k indices per query if requested
+    topk_results = [] if return_topk_indices else None
 
     # Precompute gallery^T once on the same device as queries
     gallery_embeddings_t = gallery_embeddings.t()  # [d, N_g]
@@ -191,6 +198,10 @@ def precision_at_k(
             if q_label < 0:
                 continue  # skip invalid labels
 
+            # Store top-k indices for this query if requested
+            if return_topk_indices:
+                topk_results.append((q_idx, idxs))
+
             # Convert indices → labels for this query
             retrieved_labels = [gallery_labels[j] for j in idxs]
 
@@ -207,7 +218,55 @@ def precision_at_k(
         else:
             precisions[k] = 0.0
 
+    if return_topk_indices:
+        return precisions, topk_results
     return precisions
+
+
+def tensor_to_svg(pt_path: Path) -> SVG:
+    """Load .pt tensor file and reconstruct SVG."""
+    t_sep, fillings = torch.load(pt_path, weights_only=False)
+    # t_sep is list of tensors, one per path group
+    return SVG.from_tensors(t_sep)
+
+
+def save_retrieval_results(
+    save_dir: Path,
+    svg_dir: Path,
+    query_uuids: list,
+    gallery_uuids: list,
+    topk_per_query: list[tuple[int, list[int]]],
+    max_rank: int = 10,
+):
+    """
+    Save retrieved SVGs for visualization.
+
+    For each query, creates a folder with:
+        gt.svg - the query SVG
+        rank1.svg, rank2.svg, ... - top-k retrieved SVGs
+    """
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Saving {len(topk_per_query)} query results to {save_dir}")
+
+    for i, (query_idx, gallery_indices) in enumerate(topk_per_query):
+        query_uuid = query_uuids[query_idx]
+        out_dir = save_dir / query_uuid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Save query SVG as gt.svg
+        query_svg = tensor_to_svg(svg_dir / f"{query_uuid}.pt")
+        query_svg.save_svg(out_dir / "gt.svg")
+
+        # Save top-k retrieved SVGs
+        for rank, gal_idx in enumerate(gallery_indices[:max_rank], start=1):
+            gal_uuid = gallery_uuids[gal_idx]
+            gal_svg = tensor_to_svg(svg_dir / f"{gal_uuid}.pt")
+            gal_svg.save_svg(out_dir / f"rank{rank}.svg")
+
+        # Progress logging
+        if (i + 1) % 100 == 0 or (i + 1) == len(topk_per_query):
+            logger.info(f"Saved {i + 1}/{len(topk_per_query)} query results")
 
 
 def main():
@@ -248,6 +307,12 @@ def main():
         type=int,
         default=50,
         help="Clear GPU cache every N batches to prevent memory fragmentation",
+    )
+    parser.add_argument(
+        "--save-retrieval-dir",
+        type=str,
+        default=None,
+        help="Directory to save retrieved SVGs (reconstructed from .pt tensors). Saves top-10 per query.",
     )
 
     args = parser.parse_args()
@@ -290,14 +355,33 @@ def main():
     #     logger.info("      Cross-modal retrieval will be trivial (identical embeddings).")
 
     ks = tuple(args.ks)
+    should_save = args.save_retrieval_dir is not None
 
     # Same-modal retrieval: SVG → SVG
     logger.info("Computing SVG→SVG retrieval...")
-    precisions_svg2svg = precision_at_k(z_svg, z_svg, labels, labels, ks=ks, exclude_self=True)
+    result = precision_at_k(
+        z_svg, z_svg, labels, labels, ks=ks, exclude_self=True, return_topk_indices=should_save
+    )
+
+    if should_save:
+        precisions_svg2svg, topk_indices = result
+    else:
+        precisions_svg2svg = result
 
     logger.info("SVG → SVG Retrieval:")
     for k, v in precisions_svg2svg.items():
         logger.info(f"  Precision@{k}: {v * 100:.2f}%")
+
+    # Save retrieved SVGs if requested
+    if should_save:
+        save_retrieval_results(
+            save_dir=Path(args.save_retrieval_dir),
+            svg_dir=Path(args.svg_dir),
+            query_uuids=uuids,
+            gallery_uuids=uuids,  # same for SVG→SVG
+            topk_per_query=topk_indices,
+            max_rank=10,
+        )
 
     # Cross-modal retrieval: SVG → Image
     # logger.info("Computing SVG→Image retrieval...")
