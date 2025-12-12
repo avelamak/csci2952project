@@ -1,33 +1,31 @@
 """
-MultiMAE Reconstruction Evaluation Script
+DecoderFromMultiMAE Reconstruction Evaluation Script
 
-Goal:
-    Run the MultiMAE model in a *training-like* MAE scenario:
-      - Apply the same masking strategy as in training
-      - Decode the masked SVG groups from image + visible SVG (if any)
-      - Compare ground truth vs reconstructed SVG
+Evaluate reconstruction quality from DecoderFromMultiMAE checkpoints
+(trained via train_decoder_from_multimae.py).
 
-Usage (dataset mode):
+Flow:
+    1. Encode SVG+image via frozen MultiMAE encoder -> CLS embedding
+    2. Decode via SVGTransformer -> reconstructed SVG
+    3. Compare against ground truth
+
+Usage (single sample):
     python scripts/eval_reconstruction_multimae.py \
-        --ckpt checkpoints/multimae/best_model.pt \
+        --ckpt checkpoints/multimae_decoder/checkpoint.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv \
         --idx 0 --out-dir recon_multimae --save-png
 
+Usage (batch mode with metrics):
+    python scripts/eval_reconstruction_multimae.py \
+        --ckpt checkpoints/multimae_decoder/checkpoint.pt \
+        --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv \
+        --out-dir recon_multimae --batch-size 32
+
 Usage (.pt mode):
     python scripts/eval_reconstruction_multimae.py \
-        --ckpt checkpoints/multimae/best_model.pt \
+        --ckpt checkpoints/multimae_decoder/checkpoint.pt \
         --pt sample.pt --img sample.png \
         --out-dir recon_multimae --save-png
-
-Notes:
-    - This uses model.greedy_reconstruct(), which internally:
-        * runs svg_group_encoder + image encoder
-        * applies _mask_svg_groups() and _mask_image_patches()
-        * runs mae_encoder
-        * decodes ONLY masked SVG groups with svg_decoder
-        * merges visible groups (original) + predicted groups into final_cmd/final_args
-    - For 1 to 2 visible SVG groups, the masking code masks *all* of them
-      (cross-modal regime → pure prediction from image+CLS).
 """
 
 import argparse
@@ -35,14 +33,18 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
 from vecssl.data.geom import Bbox
 from vecssl.data.svg import SVG
 from vecssl.data.svg_path import SVGPath
 from vecssl.data.svg_tensor import SVGTensor
-from vecssl.models.config import MultiMAEConfig
+from vecssl.models.config import MultiMAEConfig, _DefaultConfig
 from vecssl.models.multimae import MultiMAE
+from vecssl.models.model import SVGTransformer
+from vecssl.models.loss import SVGLoss
 from vecssl.util import setup_logging
 
 import cairosvg
@@ -50,9 +52,49 @@ import cairosvg
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------
+# =============================================================================
+# DecoderFromMultiMAE Model Definition
+# =============================================================================
+
+
+class DecoderFromMultiMAE(nn.Module):
+    """
+    Frozen MultiMAE encoder + trainable SVG decoder.
+
+    Flow:
+        1. Get CLS embedding from frozen MultiMAE via encode_joint()
+        2. Reshape CLS to match decoder expected input
+        3. Decode to SVG commands/args
+    """
+
+    def __init__(
+        self,
+        frozen_encoder: MultiMAE,
+        decoder_cfg: _DefaultConfig,
+    ):
+        super().__init__()
+        self.encoder = frozen_encoder
+        self.cfg = decoder_cfg
+
+        # Freeze encoder
+        for p in self.encoder.parameters():
+            p.requires_grad = False
+
+        # Create SVGTransformer for decoder
+        self.svg_transformer = SVGTransformer(decoder_cfg)
+
+        # Freeze the encoder part of SVGTransformer (we use MultiMAE instead)
+        if hasattr(self.svg_transformer, "encoder"):
+            for p in self.svg_transformer.encoder.parameters():
+                p.requires_grad = False
+
+        # Create loss function (needed for checkpoint loading)
+        self.loss_fn = SVGLoss(decoder_cfg)
+
+
+# =============================================================================
 # Utilities
-# ---------------------------------------------------------
+# =============================================================================
 
 
 def svg_to_png(svg_path: str, png_path: str):
@@ -108,25 +150,50 @@ def load_pt_file(
     }
 
 
-def load_multimae(checkpoint_path: Path, device: torch.device):
-    """Load MultiMAE from checkpoint, restoring cfg and state_dict."""
-    logger.info(f"Loading MultiMAE from {checkpoint_path}")
+def load_decoder_from_multimae(checkpoint_path: Path, device: torch.device):
+    """
+    Load DecoderFromMultiMAE from checkpoint.
+
+    Handles checkpoints from train_decoder_from_multimae.py which contain:
+    - encoder.* keys (MultiMAE)
+    - svg_transformer.* keys (SVGTransformer decoder)
+    - loss_fn.* keys (SVGLoss buffers)
+    """
+    logger.info(f"Loading DecoderFromMultiMAE from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    cfg_obj = ckpt.get("cfg")
-    if isinstance(cfg_obj, MultiMAEConfig):
-        cfg = cfg_obj
-    elif isinstance(cfg_obj, dict):
-        cfg = MultiMAEConfig()
-        for k, v in cfg_obj.items():
-            if hasattr(cfg, k):
-                setattr(cfg, k, v)
-    else:
-        logger.warning("No config in checkpoint, using defaults")
-        cfg = MultiMAEConfig()
+    # Get configs from checkpoint
+    multimae_cfg = ckpt.get("multimae_cfg")
+    if multimae_cfg is None:
+        # Try to reconstruct from checkpoint keys or use defaults
+        multimae_cfg = ckpt.get("cfg")
+        if isinstance(multimae_cfg, MultiMAEConfig):
+            pass
+        elif isinstance(multimae_cfg, dict):
+            cfg_temp = MultiMAEConfig()
+            for k, v in multimae_cfg.items():
+                if hasattr(cfg_temp, k):
+                    setattr(cfg_temp, k, v)
+            multimae_cfg = cfg_temp
+        else:
+            logger.warning("No MultiMAE config in checkpoint, using defaults")
+            multimae_cfg = MultiMAEConfig()
 
-    model = MultiMAE(cfg)
+    decoder_cfg = ckpt.get("decoder_cfg")
+    if decoder_cfg is None:
+        # Use defaults
+        logger.warning("No decoder config in checkpoint, using defaults")
+        decoder_cfg = _DefaultConfig()
+        decoder_cfg.encode_stages = 2
+        decoder_cfg.decode_stages = 2
+        decoder_cfg.use_vae = False
+        decoder_cfg.pred_mode = "one_shot"
 
+    # Create model
+    frozen_encoder = MultiMAE(multimae_cfg)
+    model = DecoderFromMultiMAE(frozen_encoder, decoder_cfg)
+
+    # Load state dict - handle 'model.' prefix if present
     state_dict = ckpt["model"]
     if any(k.startswith("model.") for k in state_dict.keys()):
         state_dict = {
@@ -137,7 +204,8 @@ def load_multimae(checkpoint_path: Path, device: torch.device):
     model.to(device)
     model.eval()
 
-    return model, cfg
+    logger.info(f"Loaded DecoderFromMultiMAE (d_model={multimae_cfg.d_model})")
+    return model, decoder_cfg
 
 
 def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
@@ -193,13 +261,214 @@ def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SV
     return SVG(svg_path_groups, viewbox=Bbox(viewbox_size))
 
 
-# ---------------------------------------------------------
+def custom_collate(batch):
+    """Standard collate for SVGXDataset."""
+    collated = {
+        "commands": torch.stack([item["commands"] for item in batch]),
+        "args": torch.stack([item["args"] for item in batch]),
+        "image": torch.stack([item["image"] for item in batch]),
+        "tensors": [item["tensors"] for item in batch],
+        "uuid": [item["uuid"] for item in batch],
+        "name": [item["name"] for item in batch],
+        "source": [item["source"] for item in batch],
+    }
+
+    if "dino_embedding" in batch[0]:
+        collated["dino_embedding"] = torch.stack([item["dino_embedding"] for item in batch])
+    if "dino_patches" in batch[0]:
+        collated["dino_patches"] = torch.stack([item["dino_patches"] for item in batch])
+
+    return collated
+
+
+# =============================================================================
+# Encoding and Decoding
+# =============================================================================
+
+
+@torch.no_grad()
+def encode_batch(model: DecoderFromMultiMAE, batch: dict, device: torch.device) -> torch.Tensor:
+    """
+    Encode batch to latent z using frozen MultiMAE encoder.
+
+    Args:
+        model: DecoderFromMultiMAE model
+        batch: Batch dict with commands, args, and image/dino_patches
+        device: torch device
+
+    Returns:
+        z: Latent tensor [N, 1, 1, d_model] ready for svg_transformer.greedy_sample()
+    """
+    batch_device = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+
+    # Get CLS embedding from frozen MultiMAE
+    joint = model.encoder.encode_joint(batch_device)
+    cls_embed = joint["svg"]  # [N, d_model]
+
+    # Reshape to match decoder expected input: (N, d_model) -> (N, 1, 1, d_model)
+    z = cls_embed.unsqueeze(1).unsqueeze(1)
+
+    return z
+
+
+@torch.no_grad()
+def decode_z(
+    model: DecoderFromMultiMAE, z: torch.Tensor, temperature: float = 0.0001
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Decode latent z to commands and args using SVGTransformer decoder.
+
+    Args:
+        model: DecoderFromMultiMAE model
+        z: Latent tensor [N, 1, 1, d_model]
+        temperature: Sampling temperature
+
+    Returns:
+        tuple: (commands [N, seq_len], args [N, seq_len, n_args])
+    """
+    commands_y, args_y = model.svg_transformer.greedy_sample(
+        commands_enc=None,
+        args_enc=None,
+        z=z,
+        concat_groups=True,
+        temperature=temperature,
+    )
+    return commands_y, args_y
+
+
+@torch.no_grad()
+def reconstruct_batch(
+    model: DecoderFromMultiMAE, batch: dict, device: torch.device, temperature: float = 0.0001
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Encode and decode a batch, return predictions and targets.
+
+    Returns:
+        tuple: (pred_cmds, pred_args, tgt_cmds, tgt_args)
+    """
+    z = encode_batch(model, batch, device)
+    commands_y, args_y = decode_z(model, z, temperature)
+
+    return commands_y.cpu(), args_y.cpu(), batch["commands"].cpu(), batch["args"].cpu()
+
+
+# =============================================================================
+# Metrics
+# =============================================================================
+
+
+def command_accuracy(pred_cmds: torch.Tensor, tgt_cmds: torch.Tensor) -> float:
+    """
+    Compute command token accuracy over real drawing commands (m, l, c, a).
+
+    COMMANDS_SIMPLIFIED = ["m", "l", "c", "a", "EOS", "SOS", "z"]
+    Real commands have indices 0-3 (< EOS index).
+
+    Args:
+        pred_cmds: [B, S] or [B, G, S] predicted commands
+        tgt_cmds: [B, S] or [B, G, S] target commands
+
+    Returns:
+        float: Accuracy
+    """
+    # Flatten if needed
+    if pred_cmds.ndim == 3:
+        pred_cmds = pred_cmds.reshape(pred_cmds.size(0), -1)
+    if tgt_cmds.ndim == 3:
+        tgt_cmds = tgt_cmds.reshape(tgt_cmds.size(0), -1)
+
+    # Align sequence lengths
+    S = min(pred_cmds.size(-1), tgt_cmds.size(-1))
+    pred = pred_cmds[..., :S]
+    tgt = tgt_cmds[..., :S]
+
+    # Real commands are indices 0-3 (m, l, c, a), anything >= EOS is special
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")  # 4
+    mask = tgt < eos_idx
+
+    correct = (pred == tgt) & mask
+    acc = correct.sum().float() / mask.sum().clamp(min=1)
+    return acc.item()
+
+
+def arg_errors(pred_args: torch.Tensor, tgt_args: torch.Tensor, pad_val: int = -1) -> tuple:
+    """
+    Compute argument L1 and L2 errors.
+
+    Args:
+        pred_args: predicted arguments
+        tgt_args: target arguments
+        pad_val: Padding value to ignore
+
+    Returns:
+        tuple: (L1 error, L2 error)
+    """
+    # Flatten if needed
+    if pred_args.ndim == 4:
+        pred_args = pred_args.reshape(pred_args.size(0), -1, pred_args.size(-1))
+    if tgt_args.ndim == 4:
+        tgt_args = tgt_args.reshape(tgt_args.size(0), -1, tgt_args.size(-1))
+
+    # Align sequence lengths
+    S = min(pred_args.size(-2), tgt_args.size(-2))
+    pred = pred_args[..., :S, :].float()
+    tgt = tgt_args[..., :S, :].float()
+
+    # Mask valid args
+    mask = tgt != pad_val
+    diff = (pred - tgt) * mask
+
+    l1 = diff.abs().sum() / mask.sum().clamp(min=1)
+    l2 = torch.sqrt((diff**2).sum() / mask.sum().clamp(min=1))
+
+    return l1.item(), l2.item()
+
+
+def save_reconstruction_results(
+    save_dir: Path,
+    uuids: list,
+    pred_cmds: torch.Tensor,
+    pred_args: torch.Tensor,
+    tgt_cmds: torch.Tensor,
+    tgt_args: torch.Tensor,
+    viewbox_size: int = 256,
+    save_png: bool = False,
+):
+    """Save ground truth and reconstructed SVGs."""
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    B = pred_cmds.size(0)
+    for i in range(B):
+        uuid = uuids[i]
+        out_dir = save_dir / uuid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            gt_svg = decode_svg_from_cmd_args(tgt_cmds[i], tgt_args[i], viewbox_size)
+            gt_path = out_dir / "gt.svg"
+            gt_svg.save_svg(str(gt_path))
+            if save_png:
+                svg_to_png(str(gt_path), str(gt_path.with_suffix(".png")))
+        except Exception as e:
+            logger.warning(f"Failed to save GT SVG for {uuid}: {e}")
+
+        try:
+            recon_svg = decode_svg_from_cmd_args(pred_cmds[i], pred_args[i], viewbox_size)
+            recon_path = out_dir / "recon.svg"
+            recon_svg.save_svg(str(recon_path))
+            if save_png:
+                svg_to_png(str(recon_path), str(recon_path.with_suffix(".png")))
+        except Exception as e:
+            logger.warning(f"Failed to save recon SVG for {uuid}: {e}")
+
+
+# =============================================================================
 # Main
-# ---------------------------------------------------------
+# =============================================================================
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MultiMAE Reconstruction Evaluation")
+    parser = argparse.ArgumentParser(description="DecoderFromMultiMAE Reconstruction Evaluation")
 
     # Dataset mode
     parser.add_argument("--svg-dir", type=str, default=None, help="SVG directory")
@@ -207,7 +476,9 @@ def main():
     parser.add_argument("--meta", type=str, default=None, help="Metadata CSV")
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max path groups")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
-    parser.add_argument("--idx", type=int, default=None, help="Dataset index to reconstruct")
+    parser.add_argument(
+        "--idx", type=int, default=None, help="Dataset index (single sample mode, omit for batch)"
+    )
 
     parser.add_argument(
         "--use-precomputed-dino-patches",
@@ -231,45 +502,57 @@ def main():
     )
 
     # Model / output
-    parser.add_argument("--ckpt", type=str, required=True, help="MultiMAE checkpoint path")
+    parser.add_argument(
+        "--ckpt", type=str, required=True, help="DecoderFromMultiMAE checkpoint path"
+    )
     parser.add_argument("--out-dir", type=str, default="recon_multimae", help="Output directory")
     parser.add_argument("--viewbox-size", type=int, default=256, help="SVG viewbox size")
+    parser.add_argument(
+        "--save-reconstruction-dir",
+        type=str,
+        default=None,
+        help="Directory to save reconstructed SVGs (batch mode)",
+    )
+
+    # Batch mode args
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size (batch mode)")
+    parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
 
     # Runtime
     parser.add_argument("--device", type=str, default="cuda", help="Device")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--save-png", action="store_true", help="Also save PNG versions")
+    parser.add_argument("--temperature", type=float, default=0.0001, help="Sampling temperature")
 
     args = parser.parse_args()
 
     setup_logging(level=args.log_level, rich_tracebacks=True)
     logger.info("=" * 60)
-    logger.info("MultiMAE Reconstruction Evaluation")
+    logger.info("DecoderFromMultiMAE Reconstruction Evaluation")
     logger.info("=" * 60)
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
     # Load model
-    model, cfg = load_multimae(Path(args.ckpt), device)
-    logger.info(f"Loaded MultiMAE with d_model={cfg.d_model}, max_num_groups={cfg.max_num_groups}")
+    model, cfg = load_decoder_from_multimae(Path(args.ckpt), device)
 
     # Determine mode
     use_pt = args.pt is not None
     use_dataset = args.svg_dir is not None and args.meta is not None
+    single_sample_mode = args.idx is not None
 
     if not (use_pt ^ use_dataset):
         raise ValueError(
             "Specify exactly one of: "
             "(--pt [and optionally --img]) or "
-            "(--svg-dir/--meta/--idx for dataset mode)."
+            "(--svg-dir/--meta for dataset mode)."
         )
 
-    # -----------------------------------------------------
-    # Load single item
-    # -----------------------------------------------------
+    # =========================================================================
+    # .pt file mode (single sample)
+    # =========================================================================
     if use_pt:
-        # .pt sample
         item = load_pt_file(
             args.pt,
             max_num_groups=args.max_num_groups,
@@ -285,89 +568,177 @@ def main():
             img = Image.open(args.img).convert("RGB")
             item["image"] = to_tensor(img)
         else:
-            # For a "realistic" training scenario, you probably want an image.
             logger.warning(
-                "No --img provided for .pt sample. "
-                "This will fail if MultiMAE expects an image (no dino_patches)."
+                "No --img provided for .pt sample. This will fail if model expects an image."
             )
 
         name = item.get("name", Path(args.pt).stem)
         logger.info(f"Loaded .pt sample: {name}")
 
-    else:
-        # Dataset sample
-        if args.idx is None:
-            raise ValueError("--idx is required when using dataset mode")
+        # Build batch
+        batch = {
+            "commands": item["commands"].unsqueeze(0),
+            "args": item["args"].unsqueeze(0),
+        }
+        if "image" in item:
+            batch["image"] = item["image"].unsqueeze(0)
 
-        dataset = SVGXDataset(
-            svg_dir=args.svg_dir,
-            img_dir=args.img_dir,
-            meta_filepath=args.meta,
-            max_num_groups=args.max_num_groups,
-            max_seq_len=args.max_seq_len,
-            split="test",
-            seed=42,
-            already_preprocessed=True,
-            use_precomputed_dino_patches=args.use_precomputed_dino_patches,
-            dino_patches_dir=args.dino_patches_dir,
+        # Reconstruct
+        pred_cmds, pred_args, tgt_cmds, tgt_args = reconstruct_batch(
+            model, batch, device, args.temperature
         )
 
-        logger.info(f"Dataset size: {len(dataset)}")
+        # Save results
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Ground truth SVG
+        svg_gt = decode_svg_from_cmd_args(tgt_cmds[0], tgt_args[0], args.viewbox_size)
+        gt_path = out_dir / f"{name}_gt.svg"
+        svg_gt.save_svg(str(gt_path))
+        logger.info(f"Saved ground truth SVG to {gt_path}")
+        if args.save_png:
+            svg_to_png(str(gt_path), str(gt_path.with_suffix(".png")))
+
+        # Reconstructed SVG
+        svg_recon = decode_svg_from_cmd_args(pred_cmds[0], pred_args[0], args.viewbox_size)
+        recon_path = out_dir / f"{name}_recon.svg"
+        svg_recon.save_svg(str(recon_path))
+        logger.info(f"Saved reconstructed SVG to {recon_path}")
+        if args.save_png:
+            svg_to_png(str(recon_path), str(recon_path.with_suffix(".png")))
+
+        logger.info("Done.")
+        return
+
+    # =========================================================================
+    # Dataset mode
+    # =========================================================================
+    dataset = SVGXDataset(
+        svg_dir=args.svg_dir,
+        img_dir=args.img_dir,
+        meta_filepath=args.meta,
+        max_num_groups=args.max_num_groups,
+        max_seq_len=args.max_seq_len,
+        split="test",
+        seed=42,
+        already_preprocessed=True,
+        use_precomputed_dino_patches=args.use_precomputed_dino_patches,
+        dino_patches_dir=args.dino_patches_dir,
+    )
+    logger.info(f"Dataset size: {len(dataset)}")
+
+    # -------------------------------------------------------------------------
+    # Single sample mode (--idx provided)
+    # -------------------------------------------------------------------------
+    if single_sample_mode:
         item = dataset[args.idx]
         name = item.get("name", item.get("uuid", f"idx{args.idx}"))
         logger.info(f"Loaded dataset sample: {name} (idx {args.idx})")
 
-    # -----------------------------------------------------
-    # Build batch for model.greedy_reconstruct
-    # -----------------------------------------------------
-    commands = item["commands"].unsqueeze(0)  # (1, G, S)
-    args_svg = item["args"].unsqueeze(0)  # (1, G, S, n_args)
+        # Build batch
+        batch = {
+            "commands": item["commands"].unsqueeze(0),
+            "args": item["args"].unsqueeze(0),
+        }
+        if "dino_patches" in item:
+            batch["dino_patches"] = item["dino_patches"].unsqueeze(0)
+        elif "image" in item:
+            batch["image"] = item["image"].unsqueeze(0)
+        else:
+            raise ValueError("Sample has no image or dino_patches")
 
-    batch = {
-        "commands": commands,
-        "args": args_svg,
-    }
-
-    if "dino_patches" in item:
-        batch["dino_patches"] = item["dino_patches"].unsqueeze(0)
-    elif "image" in item:
-        batch["image"] = item["image"].unsqueeze(0)
-    else:
-        raise ValueError(
-            "Sample does not contain 'image' or 'dino_patches'. "
-            "MultiMAE expects one of them for image conditioning."
+        # Reconstruct
+        pred_cmds, pred_args, tgt_cmds, tgt_args = reconstruct_batch(
+            model, batch, device, args.temperature
         )
 
-    # -----------------------------------------------------
-    # Run greedy reconstruction (training-like MAE scenario)
-    # -----------------------------------------------------
-    with torch.no_grad():
-        recon_cmd, recon_args = model.greedy_reconstruct(batch)  # (1, G, S), (1, G, S, n_args)
+        # Compute single-sample metrics
+        ca = command_accuracy(pred_cmds, tgt_cmds)
+        l1, l2 = arg_errors(pred_args, tgt_args)
+        logger.info(f"Command accuracy: {ca:.4f}")
+        logger.info(f"Args L1 error: {l1:.4f}")
+        logger.info(f"Args L2 error: {l2:.4f}")
 
-    # -----------------------------------------------------
-    # Save GT and reconstruction
-    # -----------------------------------------------------
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+        # Save results
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ground truth SVG
-    svg_gt = decode_svg_from_cmd_args(commands[0], args_svg[0], viewbox_size=args.viewbox_size)
-    gt_path = out_dir / f"{name}_gt.svg"
-    svg_gt.save_svg(str(gt_path))
-    logger.info(f"Saved ground truth SVG to {gt_path}")
-    if args.save_png:
-        svg_to_png(str(gt_path), str(gt_path.with_suffix(".png")))
+        svg_gt = decode_svg_from_cmd_args(tgt_cmds[0], tgt_args[0], args.viewbox_size)
+        gt_path = out_dir / f"{name}_gt.svg"
+        svg_gt.save_svg(str(gt_path))
+        logger.info(f"Saved ground truth SVG to {gt_path}")
+        if args.save_png:
+            svg_to_png(str(gt_path), str(gt_path.with_suffix(".png")))
 
-    # Reconstructed SVG
-    svg_recon = decode_svg_from_cmd_args(
-        recon_cmd[0], recon_args[0], viewbox_size=args.viewbox_size
+        svg_recon = decode_svg_from_cmd_args(pred_cmds[0], pred_args[0], args.viewbox_size)
+        recon_path = out_dir / f"{name}_recon.svg"
+        svg_recon.save_svg(str(recon_path))
+        logger.info(f"Saved reconstructed SVG to {recon_path}")
+        if args.save_png:
+            svg_to_png(str(recon_path), str(recon_path.with_suffix(".png")))
+
+        logger.info("Done.")
+        return
+
+    # -------------------------------------------------------------------------
+    # Batch mode (no --idx, process full test set)
+    # -------------------------------------------------------------------------
+    loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=custom_collate,
+        drop_last=False,
     )
-    recon_path = out_dir / f"{name}_recon.svg"
-    svg_recon.save_svg(str(recon_path))
-    logger.info(f"Saved reconstructed SVG to {recon_path}")
-    if args.save_png:
-        svg_to_png(str(recon_path), str(recon_path.with_suffix(".png")))
 
+    logger.info(f"Evaluating on {len(dataset)} samples (batch_size={args.batch_size})...")
+
+    # Accumulate metrics
+    total_cmd_acc = 0.0
+    total_l1 = 0.0
+    total_l2 = 0.0
+    n_batches = 0
+
+    should_save = args.save_reconstruction_dir is not None
+
+    for batch in loader:
+        pred_cmds, pred_args, tgt_cmds, tgt_args = reconstruct_batch(
+            model, batch, device, args.temperature
+        )
+
+        ca = command_accuracy(pred_cmds, tgt_cmds)
+        l1, l2 = arg_errors(pred_args, tgt_args, pad_val=-1)
+
+        total_cmd_acc += ca
+        total_l1 += l1
+        total_l2 += l2
+        n_batches += 1
+
+        # Save reconstructed SVGs if requested
+        if should_save:
+            save_reconstruction_results(
+                save_dir=Path(args.save_reconstruction_dir),
+                uuids=batch["uuid"],
+                pred_cmds=pred_cmds,
+                pred_args=pred_args,
+                tgt_cmds=tgt_cmds,
+                tgt_args=tgt_args,
+                viewbox_size=args.viewbox_size,
+                save_png=args.save_png,
+            )
+
+        if n_batches % 10 == 0:
+            logger.info(f"Processed {n_batches * args.batch_size} samples...")
+
+    # Report results
+    logger.info("=" * 60)
+    logger.info("Results:")
+    logger.info(f"  Command accuracy: {total_cmd_acc / n_batches:.4f}")
+    logger.info(f"  Args L1 error:    {total_l1 / n_batches:.4f}")
+    logger.info(f"  Args L2 error:    {total_l2 / n_batches:.4f}")
+    logger.info("=" * 60)
     logger.info("Done.")
 
 

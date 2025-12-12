@@ -1,17 +1,22 @@
 """
-Latent Interpolation Script for MultiMAE
+DecoderFromMultiMAE Latent Interpolation Script
 
-Visualize latent space by interpolating between two SVGs in the group embedding space.
+Visualize latent space by interpolating between two SVGs in the CLS embedding space.
+
+Flow:
+    1. Encode two SVG samples via frozen MultiMAE encoder -> CLS embeddings
+    2. Linearly interpolate in embedding space
+    3. Decode interpolated embeddings via SVGTransformer
 
 Usage (from dataset):
     python scripts/eval_interpolation_multimae.py \
-        --ckpt checkpoints/multimae/best_model.pt \
+        --ckpt checkpoints/multimae_decoder/checkpoint.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv \
         --idx-a 0 --idx-b 100 --num-steps 10 --out-dir interp_multimae
 
 Usage (from .pt files):
     python scripts/eval_interpolation_multimae.py \
-        --ckpt checkpoints/multimae/best_model.pt \
+        --ckpt checkpoints/multimae_decoder/checkpoint.pt \
         --pt-a sample_a.pt --pt-b sample_b.pt \
         --num-steps 10 --out-dir interp_multimae
 """
@@ -21,19 +26,67 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
 from vecssl.data.dataset import SVGXDataset
 from vecssl.data.geom import Bbox
 from vecssl.data.svg import SVG
+from vecssl.data.svg_path import SVGPath
 from vecssl.data.svg_tensor import SVGTensor
-from vecssl.models.config import MultiMAEConfig
+from vecssl.models.config import MultiMAEConfig, _DefaultConfig
 from vecssl.models.multimae import MultiMAE
-from vecssl.models.utils import _sample_categorical
+from vecssl.models.model import SVGTransformer
+from vecssl.models.loss import SVGLoss
 from vecssl.util import setup_logging
 
 import cairosvg
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# DecoderFromMultiMAE Model Definition
+# =============================================================================
+
+
+class DecoderFromMultiMAE(nn.Module):
+    """
+    Frozen MultiMAE encoder + trainable SVG decoder.
+
+    Flow:
+        1. Get CLS embedding from frozen MultiMAE via encode_joint()
+        2. Reshape CLS to match decoder expected input
+        3. Decode to SVG commands/args
+    """
+
+    def __init__(
+        self,
+        frozen_encoder: MultiMAE,
+        decoder_cfg: _DefaultConfig,
+    ):
+        super().__init__()
+        self.encoder = frozen_encoder
+        self.cfg = decoder_cfg
+
+        # Freeze encoder
+        for p in self.encoder.parameters():
+            p.requires_grad = False
+
+        # Create SVGTransformer for decoder
+        self.svg_transformer = SVGTransformer(decoder_cfg)
+
+        # Freeze the encoder part of SVGTransformer (we use MultiMAE instead)
+        if hasattr(self.svg_transformer, "encoder"):
+            for p in self.svg_transformer.encoder.parameters():
+                p.requires_grad = False
+
+        # Create loss function (needed for checkpoint loading)
+        self.loss_fn = SVGLoss(decoder_cfg)
+
+
+# =============================================================================
+# Utilities
+# =============================================================================
 
 
 def svg_to_png(svg_path: str, png_path: str):
@@ -86,27 +139,50 @@ def load_pt_file(
     }
 
 
-def load_multimae(checkpoint_path: Path, device: torch.device):
-    """Load MultiMAE from checkpoint."""
-    logger.info(f"Loading MultiMAE from {checkpoint_path}")
+def load_decoder_from_multimae(checkpoint_path: Path, device: torch.device):
+    """
+    Load DecoderFromMultiMAE from checkpoint.
+
+    Handles checkpoints from train_decoder_from_multimae.py which contain:
+    - encoder.* keys (MultiMAE)
+    - svg_transformer.* keys (SVGTransformer decoder)
+    - loss_fn.* keys (SVGLoss buffers)
+    """
+    logger.info(f"Loading DecoderFromMultiMAE from {checkpoint_path}")
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    # Get config
-    cfg_obj = ckpt.get("cfg")
-    if isinstance(cfg_obj, MultiMAEConfig):
-        cfg = cfg_obj
-    elif isinstance(cfg_obj, dict):
-        cfg = MultiMAEConfig()
-        for k, v in cfg_obj.items():
-            if hasattr(cfg, k):
-                setattr(cfg, k, v)
-    else:
-        logger.warning("No config in checkpoint, using defaults")
-        cfg = MultiMAEConfig()
+    # Get configs from checkpoint
+    multimae_cfg = ckpt.get("multimae_cfg")
+    if multimae_cfg is None:
+        # Try to reconstruct from checkpoint keys or use defaults
+        multimae_cfg = ckpt.get("cfg")
+        if isinstance(multimae_cfg, MultiMAEConfig):
+            pass
+        elif isinstance(multimae_cfg, dict):
+            cfg_temp = MultiMAEConfig()
+            for k, v in multimae_cfg.items():
+                if hasattr(cfg_temp, k):
+                    setattr(cfg_temp, k, v)
+            multimae_cfg = cfg_temp
+        else:
+            logger.warning("No MultiMAE config in checkpoint, using defaults")
+            multimae_cfg = MultiMAEConfig()
 
-    model = MultiMAE(cfg)
+    decoder_cfg = ckpt.get("decoder_cfg")
+    if decoder_cfg is None:
+        # Use defaults
+        logger.warning("No decoder config in checkpoint, using defaults")
+        decoder_cfg = _DefaultConfig()
+        decoder_cfg.encode_stages = 2
+        decoder_cfg.decode_stages = 2
+        decoder_cfg.use_vae = False
+        decoder_cfg.pred_mode = "one_shot"
 
-    # Handle wrapped model state dict
+    # Create model
+    frozen_encoder = MultiMAE(multimae_cfg)
+    model = DecoderFromMultiMAE(frozen_encoder, decoder_cfg)
+
+    # Load state dict - handle 'model.' prefix if present
     state_dict = ckpt["model"]
     if any(k.startswith("model.") for k in state_dict.keys()):
         state_dict = {
@@ -117,224 +193,141 @@ def load_multimae(checkpoint_path: Path, device: torch.device):
     model.to(device)
     model.eval()
 
-    return model, cfg
+    logger.info(f"Loaded DecoderFromMultiMAE (d_model={multimae_cfg.d_model})")
+    return model, decoder_cfg
 
 
 def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
     """
     Decode commands and args tensors back to an SVG object.
 
-    Args:
-        commands: [S] or [G, S] long tensor of command indices
-        args: [S, 11] or [G, S, 11] float tensor of arguments
-        viewbox_size: Size of the SVG viewbox
-        pad_val: Padding value used
+    Filters out SOS/EOS/PAD tokens.
 
-    Returns:
-        SVG object
+    Supports both single-group (S,) and multi-group (G, S) tensors.
+    For multi-group input, all groups are decoded and combined into one SVG.
     """
-    # Handle multi-group case
-    if commands.ndim == 2:
-        commands = commands[0]
-        args = args[0]
-
-    commands = commands.detach().cpu()
+    commands = commands.detach().cpu().long()
     args = args.detach().cpu().float()
 
-    # Filter out special tokens (SOS, EOS, padding)
     eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
     sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
-    valid_mask = (commands != pad_val) & (commands != eos_idx) & (commands != sos_idx)
 
-    if not valid_mask.any():
+    # Handle both (S,) and (G, S) shapes
+    if commands.ndim == 1:
+        commands_list = [commands]
+        args_list = [args]
+    else:
+        # Multi-group case (G, S) and (G, S, n_args)
+        commands_list = list(commands)
+        args_list = list(args)
+
+    # Decode each group
+    svg_path_groups = []
+    for cmd, arg in zip(commands_list, args_list, strict=False):
+        # Filter out SOS/EOS/PAD tokens
+        valid_mask = (cmd != pad_val) & (cmd != eos_idx) & (cmd != sos_idx)
+
+        if not valid_mask.any():
+            # Empty group - skip
+            continue
+
+        cmd_valid = cmd[valid_mask]
+        arg_valid = arg[valid_mask]
+
+        try:
+            svg_tensor = SVGTensor.from_cmd_args(cmd_valid, arg_valid, PAD_VAL=pad_val)
+            tensor_data = svg_tensor.data
+            # SVGPath.from_tensor returns an SVGPathGroup
+            svg_path_group = SVGPath.from_tensor(tensor_data, allow_empty=True)
+            svg_path_groups.append(svg_path_group)
+        except Exception as e:
+            logger.warning(f"Failed to decode group: {e}")
+            continue
+
+    if not svg_path_groups:
         return SVG([], viewbox=Bbox(viewbox_size))
 
-    # Use mask to filter out invalid tokens
-    commands = commands[valid_mask]
-    args = args[valid_mask]
-
-    try:
-        svg_tensor = SVGTensor.from_cmd_args(commands, args, PAD_VAL=pad_val)
-        tensor_data = svg_tensor.data
-        svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
-    except Exception as e:
-        logger.warning(f"Failed to decode SVG: {e}")
-        svg = SVG([], viewbox=Bbox(viewbox_size))
-
-    return svg
+    return SVG(svg_path_groups, viewbox=Bbox(viewbox_size))
 
 
-# def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
-#     """
-#     Decode commands and args tensors back to an SVG object.
-#     Filters out SOS/EOS/PAD tokens.
-#     """
-#     if commands.ndim == 2:
-#         commands = commands[0]
-#         args = args[0]
-
-#     commands = commands.detach().cpu().long()
-#     args = args.detach().cpu().float()
-
-#     cmd_vocab = SVGTensor.COMMANDS_SIMPLIFIED
-#     try:
-#         SOS_idx = cmd_vocab.index("SOS")
-#     except ValueError:
-#         SOS_idx = -999
-#     try:
-#         EOS_idx = cmd_vocab.index("EOS")
-#     except ValueError:
-#         EOS_idx = -999
-
-#     valid_cmds = []
-#     valid_args = []
-
-#     for i, c_idx in enumerate(commands.tolist()):
-#         if c_idx == EOS_idx:
-#             break
-#         if c_idx == SOS_idx or c_idx == pad_val or c_idx < 0:
-#             continue
-#         valid_cmds.append(c_idx)
-#         valid_args.append(args[i])
-
-#     if len(valid_cmds) == 0:
-#         return SVG([], viewbox=Bbox(viewbox_size))
-
-#     commands_t = torch.tensor(valid_cmds, dtype=torch.long)
-#     args_t = torch.stack(valid_args)
-
-#     try:
-#         svg_tensor = SVGTensor.from_cmd_args(commands_t, args_t, PAD_VAL=pad_val)
-#         tensor_data = svg_tensor.data
-#         svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
-#     except Exception as e:
-#         logger.warning(f"Failed to decode SVG: {e}")
-#         svg = SVG([], viewbox=Bbox(viewbox_size))
-
-#     return svg
+# =============================================================================
+# Encoding and Decoding
+# =============================================================================
 
 
 @torch.no_grad()
-def encode_to_group_embeddings(model: MultiMAE, item: dict, device: torch.device):
+def encode_sample(model: DecoderFromMultiMAE, item: dict, device: torch.device) -> torch.Tensor:
     """
-    Encode a single sample to SVG group embeddings.
-
-    Returns:
-        group_embs: (1, G, D) - Group embeddings with positional encoding
-        img_tokens: (1, P, D) - Image patch tokens (projected), or None if no image
-        visibility_mask: (1, G) - Which groups are valid
-        commands: (1, G, S) - Original commands
-        args: (1, G, S, n_args) - Original args
-    """
-    commands = item["commands"].unsqueeze(0).to(device)  # (1, G, S)
-    args = item["args"].unsqueeze(0).to(device)  # (1, G, S, n_args)
-
-    # Get group embeddings
-    group_embs = model.svg_group_encoder(commands, args)  # (1, G, D)
-
-    # Add positional embeddings
-    G = group_embs.shape[1]
-    group_embs = group_embs + model.group_pos_embed[:, :G, :]
-
-    # Get image tokens (if available)
-    img_tokens = None
-    if "dino_patches" in item:
-        img_patches = item["dino_patches"].unsqueeze(0).to(device)
-        img_tokens = model.img_proj(img_patches)
-    elif "image" in item:
-        images = item["image"].unsqueeze(0).to(device)
-        img_patches = model.image_encoder(images)
-        img_tokens = model.img_proj(img_patches)
-    else:
-        # No image provided - create dummy zero tokens
-        # This allows SVG-only interpolation without images
-        logger.warning("No image provided, using zero image tokens (SVG-only mode)")
-        num_patches = 196  # Standard for DINOv2 with 224x224 input
-        img_tokens = torch.zeros(1, num_patches, model.cfg.d_model, device=device)
-
-    # Visibility mask
-    EOS_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
-    visibility_mask = commands[:, :, 0] != EOS_idx  # (1, G)
-
-    return group_embs, img_tokens, visibility_mask, commands, args
-
-
-@torch.no_grad()
-def decode_from_embeddings(
-    model: MultiMAE,
-    group_embs: torch.Tensor,
-    img_tokens: torch.Tensor,
-    visibility_mask: torch.Tensor,
-    temperature: float = 0.0001,
-):
-    """
-    Decode SVG group embeddings back to commands and args.
-
-    This creates query tokens for all groups and uses the decoder
-    to reconstruct the full SVG.
+    Encode a single sample to latent z using frozen MultiMAE encoder.
 
     Args:
-        model: MultiMAE model
-        group_embs: (N, G, D) - Group embeddings (already has positional encoding)
-        img_tokens: (N, P, D) - Image patch tokens
-        visibility_mask: (N, G) - Which groups are valid
+        model: DecoderFromMultiMAE model
+        item: Sample dict with commands, args, and image/dino_patches
+        device: torch device
+
+    Returns:
+        z: Latent tensor [1, 1, 1, d_model] ready for svg_transformer.greedy_sample()
+    """
+    # Build batch from single item
+    batch = {
+        "commands": item["commands"].unsqueeze(0),
+        "args": item["args"].unsqueeze(0),
+    }
+
+    if "dino_patches" in item:
+        batch["dino_patches"] = item["dino_patches"].unsqueeze(0)
+    elif "image" in item:
+        batch["image"] = item["image"].unsqueeze(0)
+
+    batch_device = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+
+    # Get CLS embedding from frozen MultiMAE
+    joint = model.encoder.encode_joint(batch_device)
+    cls_embed = joint["svg"]  # [1, d_model]
+
+    # Reshape to match decoder expected input: (1, d_model) -> (1, 1, 1, d_model)
+    z = cls_embed.unsqueeze(1).unsqueeze(1)
+
+    return z
+
+
+@torch.no_grad()
+def decode_z(
+    model: DecoderFromMultiMAE, z: torch.Tensor, temperature: float = 0.0001
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Decode latent z to commands and args using SVGTransformer decoder.
+
+    Args:
+        model: DecoderFromMultiMAE model
+        z: Latent tensor [N, 1, 1, d_model]
         temperature: Sampling temperature
 
     Returns:
-        commands: (N, G, S) - Predicted command indices
-        args: (N, G, S, n_args) - Predicted arguments
+        tuple: (commands [N, seq_len], args [N, seq_len, n_args])
     """
-    device = group_embs.device
-    N, G, D = group_embs.shape
-    # S = model.cfg.max_seq_len
-
-    # Add modality embeddings
-    svg_tokens = group_embs + model.mod_embed_svg
-    img_tokens = img_tokens + model.mod_embed_img
-
-    # Build encoder input (CLS + SVG + IMG)
-    cls_token = model.cls_token.expand(N, -1, -1)
-    enc_input = torch.cat([cls_token, svg_tokens, img_tokens], dim=1)  # (N, 1+G+P, D)
-
-    # Padding mask: True = padding (ignore)
-    cls_pad = torch.zeros(N, 1, dtype=torch.bool, device=device)
-    svg_pad = ~visibility_mask  # Invalid groups are padding
-    img_pad = torch.zeros(N, img_tokens.shape[1], dtype=torch.bool, device=device)
-    enc_key_padding_mask = torch.cat([cls_pad, svg_pad, img_pad], dim=1)
-
-    # Run MAE encoder
-    memory = model.mae_encoder(
-        enc_input.transpose(0, 1), src_key_padding_mask=enc_key_padding_mask
-    )  # (L, N, D)
-
-    # Create query tokens for ALL groups (we want to decode everything)
-    # Use mask tokens + positional embeddings as queries
-    query_tokens = model.svg_mask_token.repeat(N, G, 1)  # (N, G, D)
-    query_tokens = query_tokens + model.group_pos_embed[:, :G, :]
-
-    # Decode
-    pred_cmd_logits, pred_args_logits = model.svg_decoder(
-        query_tokens, memory, memory_key_padding_mask=enc_key_padding_mask
+    commands_y, args_y = model.svg_transformer.greedy_sample(
+        commands_enc=None,
+        args_enc=None,
+        z=z,
+        concat_groups=True,
+        temperature=temperature,
     )
-
-    # Sample from logits
-    pred_cmd, pred_args = _sample_categorical(temperature, pred_cmd_logits, pred_args_logits)
-    pred_args = pred_args - 1  # Shift back from [0, 256] to [-1, 255]
-
-    # Mask invalid args
-    cmd_args_mask = model.cmd_args_mask[pred_cmd.long()].bool()
-    pred_args[~cmd_args_mask] = -1
-
-    return pred_cmd, pred_args
+    return commands_y, args_y
 
 
-def interpolate_embeddings(emb_a: torch.Tensor, emb_b: torch.Tensor, t: float) -> torch.Tensor:
-    """Linear interpolation between two embedding tensors."""
-    return (1 - t) * emb_a + t * emb_b
+def interpolate_z(z_a: torch.Tensor, z_b: torch.Tensor, t: float) -> torch.Tensor:
+    """Linear interpolation between two latent tensors."""
+    return (1 - t) * z_a + t * z_b
+
+
+# =============================================================================
+# Main
+# =============================================================================
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Latent interpolation for MultiMAE")
+    parser = argparse.ArgumentParser(description="DecoderFromMultiMAE Latent Interpolation")
 
     # Dataset args (for loading from dataset)
     parser.add_argument("--svg-dir", type=str, default=None, help="SVG directory")
@@ -361,17 +354,19 @@ def main():
         "--img-a",
         type=str,
         default=None,
-        help="Path to image for sample A (optional, for cross-modal)",
+        help="Path to image for sample A (optional)",
     )
     parser.add_argument(
         "--img-b",
         type=str,
         default=None,
-        help="Path to image for sample B (optional, for cross-modal)",
+        help="Path to image for sample B (optional)",
     )
 
     # Model args
-    parser.add_argument("--ckpt", type=str, required=True, help="MultiMAE checkpoint path")
+    parser.add_argument(
+        "--ckpt", type=str, required=True, help="DecoderFromMultiMAE checkpoint path"
+    )
 
     # Interpolation args (for dataset mode)
     parser.add_argument("--idx-a", type=int, default=None, help="Index of first SVG (dataset mode)")
@@ -381,15 +376,7 @@ def main():
     parser.add_argument("--num-steps", type=int, default=10, help="Number of interpolation steps")
     parser.add_argument("--out-dir", type=str, default="interp_multimae", help="Output directory")
     parser.add_argument("--temperature", type=float, default=0.0001, help="Sampling temperature")
-
-    # Interpolation mode
-    parser.add_argument(
-        "--interp-mode",
-        type=str,
-        choices=["svg_only", "both", "img_only"],
-        default="svg_only",
-        help="What to interpolate: svg_only (SVG embeddings), both (SVG + image), img_only (image embeddings only)",
-    )
+    parser.add_argument("--viewbox-size", type=int, default=256, help="SVG viewbox size")
 
     # Runtime args
     parser.add_argument("--device", type=str, default="cuda", help="Device")
@@ -400,15 +387,14 @@ def main():
 
     setup_logging(level=args.log_level, rich_tracebacks=True)
     logger.info("=" * 60)
-    logger.info("MultiMAE Latent Interpolation")
+    logger.info("DecoderFromMultiMAE Latent Interpolation")
     logger.info("=" * 60)
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
     # Load model
-    model, cfg = load_multimae(Path(args.ckpt), device)
-    logger.info(f"Loaded MultiMAE with d_model={cfg.d_model}, max_num_groups={cfg.max_num_groups}")
+    model, cfg = load_decoder_from_multimae(Path(args.ckpt), device)
 
     # Determine input mode: .pt files or dataset
     use_pt_files = args.pt_a is not None and args.pt_b is not None
@@ -428,7 +414,7 @@ def main():
             max_seq_len=args.max_seq_len,
         )
 
-        # Load images if provided (for cross-modal interpolation)
+        # Load images if provided
         if args.img_a:
             from PIL import Image
             import torchvision.transforms as transforms
@@ -477,27 +463,22 @@ def main():
             "or --svg-dir/--meta/--idx-a/--idx-b for dataset mode"
         )
 
-    logger.info(f"Interpolation mode: {args.interp_mode}")
-
     # Encode both samples
-    group_embs_a, img_tokens_a, vis_mask_a, cmd_a, args_a = encode_to_group_embeddings(
-        model, item_a, device
-    )
-    group_embs_b, img_tokens_b, vis_mask_b, cmd_b, args_b = encode_to_group_embeddings(
-        model, item_b, device
-    )
+    z_a = encode_sample(model, item_a, device)
+    z_b = encode_sample(model, item_b, device)
 
-    logger.info(f"Group embeddings A shape: {group_embs_a.shape}")
-    logger.info(f"Group embeddings B shape: {group_embs_b.shape}")
-    logger.info(f"Image tokens A shape: {img_tokens_a.shape}")
+    logger.info(f"Encoded z_a shape: {z_a.shape}")
+    logger.info(f"Encoded z_b shape: {z_b.shape}")
 
     # Create output directory
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save original samples (ground truth)
-    for tag, cmd, arg in [("a_gt", cmd_a, args_a), ("b_gt", cmd_b, args_b)]:
-        svg = decode_svg_from_cmd_args(cmd[0], arg[0])
+    # Save ground truth endpoints
+    for tag, item in [("a_gt", item_a), ("b_gt", item_b)]:
+        svg = decode_svg_from_cmd_args(
+            item["commands"], item["args"], viewbox_size=args.viewbox_size
+        )
         out_path = out_dir / f"interp_{tag}.svg"
         svg.save_svg(str(out_path))
         logger.info(f"Saved {out_path}")
@@ -505,47 +486,29 @@ def main():
             svg_to_png(str(out_path), str(out_path.with_suffix(".png")))
 
     # Save reconstructions of endpoints (to verify encoder-decoder roundtrip)
-    for tag, group_embs, img_tokens, vis_mask in [
-        ("a_recon", group_embs_a, img_tokens_a, vis_mask_a),
-        ("b_recon", group_embs_b, img_tokens_b, vis_mask_b),
-    ]:
-        pred_cmd, pred_args = decode_from_embeddings(
-            model, group_embs, img_tokens, vis_mask, args.temperature
-        )
-        svg = decode_svg_from_cmd_args(pred_cmd[0], pred_args[0])
+    for tag, z in [("a_recon", z_a), ("b_recon", z_b)]:
+        commands_y, args_y = decode_z(model, z, args.temperature)
+        svg = decode_svg_from_cmd_args(commands_y[0], args_y[0], viewbox_size=args.viewbox_size)
         out_path = out_dir / f"interp_{tag}.svg"
         svg.save_svg(str(out_path))
         logger.info(f"Saved {out_path}")
         if args.save_png:
             svg_to_png(str(out_path), str(out_path.with_suffix(".png")))
 
-    # Interpolation
-    # Use the union of visibility masks (conservative: if either has a valid group, keep it)
-    vis_mask_interp = vis_mask_a | vis_mask_b
-
+    # Linear interpolation
     logger.info(f"Starting interpolation with {args.num_steps} steps...")
 
     for i, t in enumerate(torch.linspace(0.0, 1.0, args.num_steps)):
         t_val = t.item()
 
-        # Interpolate based on mode
-        if args.interp_mode == "svg_only":
-            group_embs_t = interpolate_embeddings(group_embs_a, group_embs_b, t_val)
-            img_tokens_t = img_tokens_a  # Keep image from A
-        elif args.interp_mode == "both":
-            group_embs_t = interpolate_embeddings(group_embs_a, group_embs_b, t_val)
-            img_tokens_t = interpolate_embeddings(img_tokens_a, img_tokens_b, t_val)
-        elif args.interp_mode == "img_only":
-            group_embs_t = group_embs_a  # Keep SVG from A
-            img_tokens_t = interpolate_embeddings(img_tokens_a, img_tokens_b, t_val)
+        # Interpolate in latent space
+        z_t = interpolate_z(z_a, z_b, t_val)
 
         # Decode
-        pred_cmd_t, pred_args_t = decode_from_embeddings(
-            model, group_embs_t, img_tokens_t, vis_mask_interp, args.temperature
-        )
+        commands_t, args_t = decode_z(model, z_t, args.temperature)
 
         # Save
-        svg_t = decode_svg_from_cmd_args(pred_cmd_t[0], pred_args_t[0])
+        svg_t = decode_svg_from_cmd_args(commands_t[0], args_t[0], viewbox_size=args.viewbox_size)
         out_path = out_dir / f"interp_{i:02d}_t{t_val:.2f}.svg"
         svg_t.save_svg(str(out_path))
 
