@@ -46,9 +46,9 @@ def compute_all_embeddings(
     device: torch.device,
     max_samples: int | None = None,
     cache_clear_interval: int = 50,
-) -> tuple[torch.Tensor, torch.Tensor, list, list]:
+) -> tuple[torch.Tensor, torch.Tensor | None, list, list]:
     """
-    Compute SVG and image embeddings in a single pass through the dataset.
+    Compute SVG embeddings in a single pass through the dataset.
 
     Args:
         model: Encoder model with encode_joint() method
@@ -58,7 +58,7 @@ def compute_all_embeddings(
         cache_clear_interval: clear GPU cache every N batches to prevent fragmentation
 
     Returns:
-        tuple: (z_svg [N, d], z_img [N, d], labels [N], uuids [N])
+        tuple: (z_svg [N, d], z_img (None), labels [N], uuids [N])
     """
     model.eval()
     model.to(device)
@@ -167,7 +167,7 @@ def precision_at_k(
     precision_accum = {k: [] for k in ks}
 
     # Collect top-k indices per query if requested
-    topk_results = [] if return_topk_indices else None
+    topk_results: list[tuple[int, list[int]]] = []
 
     # Precompute gallery^T once on the same device as queries
     gallery_embeddings_t = gallery_embeddings.t()  # [d, N_g]
@@ -224,10 +224,30 @@ def precision_at_k(
 
 
 def tensor_to_svg(pt_path: Path) -> SVG:
-    """Load .pt tensor file and reconstruct SVG."""
+    """Load .pt tensor file and reconstruct SVG.
+
+    Uses SVGTensor.from_data() to properly convert raw tensor format
+    to the format expected by SVG.from_tensor().
+    """
+    from vecssl.data.svg_tensor import SVGTensor
+    from vecssl.data.geom import Bbox
+
     t_sep, fillings = torch.load(pt_path, weights_only=False)
-    # t_sep is list of tensors, one per path group
-    return SVG.from_tensors(t_sep)
+
+    # Convert each path group's raw tensor through SVGTensor
+    valid_tensors = []
+    for t in t_sep:
+        if t.numel() == 0:
+            continue
+        # SVGTensor.from_data() parses the 14-column format
+        # .data property returns tensor in format expected by SVG.from_tensor()
+        svg_tensor = SVGTensor.from_data(t, PAD_VAL=-1)
+        valid_tensors.append(svg_tensor.data)
+
+    if not valid_tensors:
+        return SVG([], viewbox=Bbox(24))
+
+    return SVG.from_tensors(valid_tensors, viewbox=Bbox(24), allow_empty=True)
 
 
 def save_retrieval_results(
@@ -278,7 +298,7 @@ def main():
         "--encoder-type",
         type=str,
         required=True,
-        choices=["jepa", "contrastive", "autoencoder"],
+        choices=["jepa", "contrastive", "autoencoder", "multimae"],
         help="Type of encoder",
     )
     parser.add_argument(
@@ -359,14 +379,16 @@ def main():
 
     # Same-modal retrieval: SVG → SVG
     logger.info("Computing SVG→SVG retrieval...")
-    result = precision_at_k(
-        z_svg, z_svg, labels, labels, ks=ks, exclude_self=True, return_topk_indices=should_save
-    )
-
+    topk_indices: list[tuple[int, list[int]]] = []
     if should_save:
-        precisions_svg2svg, topk_indices = result
+        precisions_svg2svg, topk_indices = precision_at_k(
+            z_svg, z_svg, labels, labels, ks=ks, exclude_self=True, return_topk_indices=True
+        )
     else:
-        precisions_svg2svg = result
+        precisions_svg2svg = precision_at_k(
+            z_svg, z_svg, labels, labels, ks=ks, exclude_self=True, return_topk_indices=False
+        )
+    assert isinstance(precisions_svg2svg, dict)  # type guard for Pylance
 
     logger.info("SVG → SVG Retrieval:")
     for k, v in precisions_svg2svg.items():
