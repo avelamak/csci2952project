@@ -232,7 +232,8 @@ def tensor_to_svg(pt_path: Path) -> SVG:
     from vecssl.data.svg_tensor import SVGTensor
     from vecssl.data.geom import Bbox
 
-    t_sep, fillings = torch.load(pt_path, weights_only=False)
+    res = torch.load(pt_path, weights_only=False)
+    t_sep, _ = res["t_sep"], res["fillings"]
 
     # Convert each path group's raw tensor through SVGTensor
     valid_tensors = []
