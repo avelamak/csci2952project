@@ -18,6 +18,9 @@ from pathlib import Path
 import torch
 
 from vecssl.data.dataset import SVGXDataset
+from vecssl.data.geom import Bbox
+from vecssl.data.svg import SVG
+from vecssl.data.svg_tensor import SVGTensor
 from vecssl.models.config import _DefaultConfig
 from vecssl.models.model import SVGTransformer
 from vecssl.util import setup_logging
@@ -26,6 +29,94 @@ from eval_utils import add_common_args, custom_collate
 from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
+
+
+def decode_svg_from_cmd_args(
+    commands: torch.Tensor,
+    args: torch.Tensor,
+    viewbox_size: int = 256,  # Match ARGS_DIM quantization range
+    pad_val: int = -1,
+) -> SVG:
+    """
+    Decode commands and args tensors back to an SVG object.
+
+    Args:
+        commands: [S] or [G, S] long tensor of command indices
+        args: [S, 11] or [G, S, 11] float tensor of arguments
+        viewbox_size: Size of the SVG viewbox (default 256)
+        pad_val: Padding value used (default -1)
+
+    Returns:
+        SVG object that can be saved via .save_svg()
+    """
+    # If we have multiple groups, just take the first one for debugging
+    if commands.ndim == 2:
+        commands = commands[0]
+        args = args[0]
+
+    commands = commands.detach().cpu()
+    args = args.detach().cpu().float()
+
+    # Find actual sequence length (before EOS/padding)
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+    valid_mask = (commands != pad_val) & (commands != eos_idx)
+
+    if valid_mask.any():
+        # Find last valid command
+        seq_len = valid_mask.long().sum().item()
+    else:
+        seq_len = 0
+
+    if seq_len == 0:
+        # Return empty SVG
+        return SVG([], viewbox=Bbox(viewbox_size))
+
+    # Truncate to valid length
+    commands = commands[:seq_len]
+    args = args[:seq_len]
+
+    # Create SVGTensor from commands and args
+    svg_tensor = SVGTensor.from_cmd_args(
+        commands,
+        args,
+        PAD_VAL=pad_val,
+    )
+
+    # Get full data tensor (14 columns) and convert to SVG
+    tensor_data = svg_tensor.data
+    svg = SVG.from_tensor(tensor_data, viewbox=Bbox(viewbox_size), allow_empty=True)
+
+    return svg
+
+
+def save_reconstruction_results(
+    save_dir: Path,
+    uuids: list,
+    pred_cmds: torch.Tensor,
+    pred_args: torch.Tensor,
+    tgt_cmds: torch.Tensor,
+    tgt_args: torch.Tensor,
+):
+    """Save ground truth and reconstructed SVGs."""
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    B = pred_cmds.size(0)
+    for i in range(B):
+        uuid = uuids[i]
+        out_dir = save_dir / uuid
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            gt_svg = decode_svg_from_cmd_args(tgt_cmds[i], tgt_args[i])
+            gt_svg.save_svg(out_dir / "gt.svg")
+        except Exception as e:
+            logger.warning(f"Failed to save GT SVG for {uuid}: {e}")
+
+        try:
+            recon_svg = decode_svg_from_cmd_args(pred_cmds[i], pred_args[i])
+            recon_svg.save_svg(out_dir / "recon.svg")
+        except Exception as e:
+            logger.warning(f"Failed to save recon SVG for {uuid}: {e}")
 
 
 def load_autoencoder(checkpoint_path: Path, device: torch.device):
@@ -164,6 +255,12 @@ def main():
         required=True,
         help="Path to autoencoder checkpoint",
     )
+    parser.add_argument(
+        "--save-reconstruction-dir",
+        type=str,
+        default=None,
+        help="Directory to save reconstructed SVGs (gt.svg + recon.svg per sample)",
+    )
 
     args = parser.parse_args()
 
@@ -207,6 +304,8 @@ def main():
     total_l2 = 0.0
     n_batches = 0
 
+    should_save = args.save_reconstruction_dir is not None
+
     for batch in loader:
         pred_cmds, pred_args, tgt_cmds, tgt_args = reconstruct_batch(model, batch, device)
 
@@ -217,6 +316,17 @@ def main():
         total_l1 += l1
         total_l2 += l2
         n_batches += 1
+
+        # Save reconstructed SVGs if requested
+        if should_save:
+            save_reconstruction_results(
+                save_dir=Path(args.save_reconstruction_dir),
+                uuids=batch["uuid"],
+                pred_cmds=pred_cmds,
+                pred_args=pred_args,
+                tgt_cmds=tgt_cmds,
+                tgt_args=tgt_args,
+            )
 
         if n_batches % 10 == 0:
             logger.info(f"Processed {n_batches * args.batch_size} samples...")
