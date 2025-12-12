@@ -33,6 +33,18 @@ def extract_glyphs(ttf_path: Path, output_dir: Path) -> dict:
         font_output_dir = output_dir / font_name
         font_output_dir.mkdir(parents=True, exist_ok=True)
 
+        has_all_chars = True
+        for char in CHARS:
+            code_point = ord(char)
+            if code_point not in cmap:
+                has_all_chars = False
+                break
+        if not has_all_chars:
+            logger.warning(f"{font_name} doesn't have all chars, skipping")
+            for char in CHARS:
+                result["missing"].append(char)
+            return result
+
         for char in CHARS:
             code_point = ord(char)
             if code_point not in cmap:

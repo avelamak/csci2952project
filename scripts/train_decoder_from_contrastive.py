@@ -1,13 +1,13 @@
 """
-JEPA Decoder Training Script
+Contrastive Decoder Training Script
 
-Loads a pretrained JEPA checkpoint, transfers the encoder weights to an SVG
+Loads a pretrained Contrastive checkpoint, transfers the encoder weights to an SVG
 autoencoder, freezes the encoder, and trains the 2-stage decoder for SVG
 reconstruction.
 
 Usage:
-    python scripts/train_decoder_from_jepa.py \
-        --jepa-checkpoint checkpoints/jepa/best_model.pt \
+    python scripts/train_decoder_from_contrastive.py \
+        --contrastive-checkpoint checkpoints/contrastive/best_model.pt \
         --svg-dir svgx_svgs \
         --img-dir svgx_imgs \
         --meta svgx_meta.csv \
@@ -25,8 +25,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.config import _DefaultConfig, JepaConfig
-from vecssl.models.jepa import Jepa
+from vecssl.models.config import _DefaultConfig, ContrastiveConfig
+from vecssl.models.contrastive import ContrastiveModel
 from vecssl.trainer import Trainer
 
 from vecssl.util import setup_logging, set_seed
@@ -45,22 +45,22 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-def load_jepa_checkpoint(jepa_ckpt_path: Path) -> tuple[Jepa, JepaConfig]:
+def load_contrastive_checkpoint(ckpt_path: Path) -> tuple[Contrastive, ContrastiveConfig]:
     """
-    Load JEPA checkpoint and return (model, config).
+    Load Contrastive checkpoint and return (model, config).
     """
-    logger.info(f"Loading JEPA checkpoint from: {jepa_ckpt_path}")
-    ckpt = torch.load(jepa_ckpt_path, map_location="cpu", weights_only=False)
+    logger.info(f"Loading Contrastive checkpoint from: {ckpt_path}")
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
     cfg_obj = ckpt.get("cfg")
     if cfg_obj is None:
-        logger.warning("No config found in checkpoint, using default JepaConfig")
-        cfg = JepaConfig()
-    elif isinstance(cfg_obj, JepaConfig):
+        logger.warning("No config found in checkpoint, using default ContrastiveConfig")
+        cfg = ContrastiveConfig()
+    elif isinstance(cfg_obj, ContrastiveConfig):
         cfg = cfg_obj
     elif isinstance(cfg_obj, dict):
-        logger.info("Reconstructing JepaConfig from checkpoint dict")
-        cfg = JepaConfig()
+        logger.info("Reconstructing ContrastiveConfig from checkpoint dict")
+        cfg = ContrastiveConfig()
         for key, value in cfg_obj.items():
             if hasattr(cfg, key):
                 setattr(cfg, key, value)
@@ -70,13 +70,13 @@ def load_jepa_checkpoint(jepa_ckpt_path: Path) -> tuple[Jepa, JepaConfig]:
     if "model" not in ckpt:
         raise KeyError("Checkpoint missing 'model' key")
 
-    jepa = Jepa(cfg)
-    jepa.load_state_dict(ckpt["model"])
-    jepa.eval()
+    contrastive = ContrastiveModel(cfg)
+    contrastive.load_state_dict(ckpt["model"])
+    contrastive.eval()
 
     epoch = ckpt.get("epoch", "unknown")
     logger.info(
-        "Loaded JEPA (epoch=%s, d_model=%d, d_joint=%d, n_layers=%d, max_num_groups=%d, max_seq_len=%d)",
+        "Loaded Contrastive (epoch=%s, d_model=%d, d_joint=%d, n_layers=%d, max_num_groups=%d, max_seq_len=%d)",
         epoch,
         cfg.d_model,
         cfg.d_joint,
@@ -85,37 +85,37 @@ def load_jepa_checkpoint(jepa_ckpt_path: Path) -> tuple[Jepa, JepaConfig]:
         cfg.max_seq_len,
     )
 
-    return jepa, cfg
+    return contrastive, cfg
 
 
-def build_ae_config_from_jepa(jepa_cfg: JepaConfig) -> _DefaultConfig:
+def build_ae_config_from_contrastive(contrastive_cfg: ContrastiveConfig) -> _DefaultConfig:
     """
-    Create SVGTransformer config matching JEPA encoder settings,
+    Create SVGTransformer config matching Contrastive encoder settings,
     configured as a 2-stage VAE autoencoder.
     """
     cfg = _DefaultConfig()
 
     # Encoder settings
-    cfg.max_num_groups = jepa_cfg.max_num_groups
-    cfg.max_seq_len = jepa_cfg.max_seq_len
+    cfg.max_num_groups = contrastive_cfg.max_num_groups
+    cfg.max_seq_len = contrastive_cfg.max_seq_len
     cfg.max_total_len = cfg.max_num_groups * cfg.max_seq_len
-    cfg.d_model = jepa_cfg.d_model
-    cfg.n_layers = jepa_cfg.n_layers
-    cfg.n_heads = jepa_cfg.n_heads
-    cfg.dim_feedforward = jepa_cfg.dim_feedforward
-    cfg.dropout = jepa_cfg.dropout
-    cfg.dim_z = jepa_cfg.dim_z
-    cfg.use_resnet = jepa_cfg.use_resnet
+    cfg.d_model = contrastive_cfg.d_model
+    cfg.n_layers = contrastive_cfg.n_layers
+    cfg.n_heads = contrastive_cfg.n_heads
+    cfg.dim_feedforward = contrastive_cfg.dim_feedforward
+    cfg.dropout = contrastive_cfg.dropout
+    cfg.dim_z = contrastive_cfg.dim_z
+    cfg.use_resnet = contrastive_cfg.use_resnet
 
-    cfg.args_dim = jepa_cfg.args_dim
-    cfg.n_args = jepa_cfg.n_args
-    cfg.n_commands = jepa_cfg.n_commands
+    cfg.args_dim = contrastive_cfg.args_dim
+    cfg.n_args = contrastive_cfg.n_args
+    cfg.n_commands = contrastive_cfg.n_commands
 
     # Decoder / autoencoder settings
     cfg.encode_stages = 2
     cfg.decode_stages = 2
     cfg.use_vae = True
-    cfg.n_layers_decode = getattr(jepa_cfg, "n_layers_decode", 4)
+    cfg.n_layers_decode = getattr(contrastive_cfg, "n_layers_decode", 4)
     cfg.pred_mode = "autoregressive"
     cfg.self_match = False
     cfg.num_groups_proposal = cfg.max_num_groups
@@ -130,17 +130,17 @@ def build_ae_config_from_jepa(jepa_cfg: JepaConfig) -> _DefaultConfig:
     return cfg
 
 
-def transfer_encoder_weights(jepa: Jepa, ae_model: SimpleSVGAutoencoder) -> None:
+def transfer_encoder_weights(contrastive: ContrastiveModel, ae_model: SimpleSVGAutoencoder) -> None:
     """
-    Copy svg_encoder weights from JEPA to SVGTransformer.encoder.
+    Copy svg_encoder weights from Contrastive to SVGTransformer.encoder.
     """
-    logger.info("Transferring encoder weights from JEPA")
-    jepa_encoder_state = jepa.svg_encoder.state_dict()
-    ae_model.model.encoder.load_state_dict(jepa_encoder_state, strict=False)
-    logger.info("Transferred %d encoder parameter tensors", len(jepa_encoder_state))
+    logger.info("Transferring encoder weights from Contrastive")
+    contrastive_encoder_state = contrastive.encoder.state_dict()
+    ae_model.model.encoder.load_state_dict(contrastive_encoder_state, strict=False)
+    logger.info("Transferred %d encoder parameter tensors", len(contrastive_encoder_state))
 
-    if hasattr(jepa, "resnet") and hasattr(ae_model.model, "resnet"):
-        ae_model.model.resnet.load_state_dict(jepa.resnet.state_dict())
+    if hasattr(contrastive, "resnet") and hasattr(ae_model.model, "resnet"):
+        ae_model.model.resnet.load_state_dict(contrastive.resnet.state_dict())
         logger.info("Transferred ResNet weights")
 
 
@@ -247,7 +247,7 @@ def build_wandb_config(cfg: _DefaultConfig, args, total: int, trainable: int, fr
         "n_params_total": total,
         "n_params_trainable": trainable,
         "n_params_frozen": frozen,
-        "jepa_checkpoint": str(args.jepa_checkpoint),
+        "contrastive_checkpoint": str(args.contrastive_checkpoint),
         "encoder_frozen": True,
         "random_seed": args.seed,
     }
@@ -259,14 +259,14 @@ def build_wandb_config(cfg: _DefaultConfig, args, total: int, trainable: int, fr
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train SVG decoder from pretrained JEPA encoder")
+    parser = argparse.ArgumentParser(description="Train SVG decoder from pretrained Contrastive encoder")
 
-    # JEPA checkpoint
+    # Contrastive checkpoint
     parser.add_argument(
-        "--jepa-checkpoint",
+        "--contrastive-checkpoint",
         type=str,
         required=True,
-        help="Path to pretrained JEPA checkpoint",
+        help="Path to pretrained Contrastive checkpoint",
     )
 
     # Dataset args
@@ -274,7 +274,7 @@ def main() -> None:
     parser.add_argument("--img-dir", type=str, default=None, help="Image directory (optional)")
     parser.add_argument("--meta", type=str, required=True, help="Metadata CSV")
 
-    # Model args (will be overridden by JEPA config where applicable)
+    # Model args (will be overridden by contrastive config where applicable)
     parser.add_argument("--max-num-groups", type=int, default=None, help="Override max_num_groups")
     parser.add_argument("--max-seq-len", type=int, default=None, help="Override max_seq_len")
 
@@ -310,7 +310,7 @@ def main() -> None:
     # Logging args
     parser.add_argument("--tb-dir", type=str, default=None, help="TensorBoard directory")
     parser.add_argument("--wandb-project", type=str, default=None, help="Wandb project name")
-    parser.add_argument("--wandb-name", type=str, default='jepa_decoder', help="Wandb run name")
+    parser.add_argument("--wandb-name", type=str, default='contrastive_decoder', help="Wandb run name")
     parser.add_argument("--wandb-entity", type=str, default='vecssl', help="Wandb entity/team")
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
     parser.add_argument("--log-file", type=str, default=None, help="Log to file")
@@ -333,37 +333,37 @@ def main() -> None:
 
     logger.info("=" * 60)
     logger.info(f"Random seed: {args.seed}")
-    logger.info("JEPA Decoder Training")
+    logger.info("Contrastive Decoder Training")
     logger.info("=" * 60)
 
-    # 1. Load JEPA checkpoint
-    jepa, jepa_cfg = load_jepa_checkpoint(Path(args.jepa_checkpoint))
+    # 1. Load Contrastive checkpoint
+    contrastive, contrastive_cfg = load_contrastive_checkpoint(Path(args.contrastive_checkpoint))
 
     # 2. Override config values if specified
     if args.max_num_groups is not None:
-        jepa_cfg.max_num_groups = args.max_num_groups
+        contrastive_cfg.max_num_groups = args.max_num_groups
     if args.max_seq_len is not None:
-        jepa_cfg.max_seq_len = args.max_seq_len
+        contrastive_cfg.max_seq_len = args.max_seq_len
 
     # Store for dataloader
-    args.max_num_groups = jepa_cfg.max_num_groups
-    args.max_seq_len = jepa_cfg.max_seq_len
+    args.max_num_groups = contrastive_cfg.max_num_groups
+    args.max_seq_len = contrastive_cfg.max_seq_len
 
     # 3. Build autoencoder config
-    cfg = build_ae_config_from_jepa(jepa_cfg)
+    cfg = build_ae_config_from_contrastive(contrastive_cfg)
 
     # 4. Create autoencoder wrapper
     logger.info("Creating autoencoder model...")
     model = SimpleSVGAutoencoder(cfg, debug_mode=args.debug)
 
-    # 5. Transfer encoder weights from JEPA
-    transfer_encoder_weights(jepa, model)
+    # 5. Transfer encoder weights from Contrastive
+    transfer_encoder_weights(contrastive, model)
 
     # 6. Freeze encoder
     freeze_encoder(model)
 
-    # Free JEPA memory
-    del jepa
+    # Free Contrastive memory
+    del contrastive
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 

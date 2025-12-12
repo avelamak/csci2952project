@@ -85,22 +85,20 @@ class Jepa(JointModel):
                 dropout=cfg.predictor_mlp_dropout,
             )
 
-        with torch.no_grad():
-            self.image_encoder = DINOImageEncoder()
-            for param in self.image_encoder.parameters():
-                param.requires_grad = False
-            # self.image_projector = nn.Linear(
-            #     self.image_encoder.backbone.config.hidden_size, cfg.d_joint
-            # )
-            # for param in self.image_projector.parameters():
-            #     param.requires_grad = False
+        # Only load DINOImageEncoder if not using precomputed embeddings
+        if not cfg.use_precomputed_dino:
+            with torch.no_grad():
+                self.image_encoder = DINOImageEncoder(layer=self.cfg.DINO_layer)
+                for param in self.image_encoder.parameters():
+                    param.requires_grad = False
+        else:
+            self.image_encoder = None
 
     def forward(self, batch):
         device = next(self.parameters()).device
 
         commands = batch["commands"].to(device)
         args = batch["args"].to(device)
-        images = batch["image"].to(device)
 
         commands_enc, args_enc = _make_seq_first(commands, args)
         z_svg = self.svg_encoder(commands_enc, args_enc)
@@ -112,10 +110,14 @@ class Jepa(JointModel):
         z_svg = self.predictor(z_svg)
         z_svg = F.normalize(z_svg, dim=-1)
 
-        with torch.no_grad():
-            z_img = self.image_encoder(images)
-            # z_img = self.image_projector(z_img)
-            z_img = F.normalize(z_img, dim=-1)
+        # Use precomputed DINO embeddings if available, otherwise compute on-the-fly
+        if "dino_embedding" in batch:
+            z_img = batch["dino_embedding"].to(device)
+        else:
+            images = batch["image"].to(device)
+            with torch.no_grad():
+                z_img = self.image_encoder(images)
+        z_img = F.normalize(z_img, dim=-1)
 
         loss = self.loss(z_svg, z_img)
 
@@ -131,7 +133,6 @@ class Jepa(JointModel):
 
         commands = batch["commands"].to(device)
         args = batch["args"].to(device)
-        images = batch["image"].to(device)
 
         commands_enc, args_enc = _make_seq_first(commands, args)
         z_svg = self.svg_encoder(commands_enc, args_enc)
@@ -142,8 +143,12 @@ class Jepa(JointModel):
         z_svg = z_svg.squeeze()
         z_svg = F.normalize(z_svg, dim=-1)
 
-        z_img = self.image_encoder(images)
-        # z_img = self.image_projector(z_img)
+        # Use precomputed DINO embeddings if available, otherwise compute on-the-fly
+        if "dino_embedding" in batch:
+            z_img = batch["dino_embedding"].to(device)
+        else:
+            images = batch["image"].to(device)
+            z_img = self.image_encoder(images)
         z_img = F.normalize(z_img, dim=-1)
 
         return {"svg": z_svg, "img": z_img}

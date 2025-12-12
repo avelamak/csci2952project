@@ -1,8 +1,7 @@
 """
-Minimal JEPA Test Script
+Minimal SVGMAE Test Script
 
-Tests that the JEPA model forward + loss pipeline runs (smoke test).
-This mirrors scripts/test_svg_autoencoder.py but builds a JEPA model.
+Tests that the SVG-only MAE model forward + loss pipeline runs (smoke test).
 """
 
 import argparse
@@ -14,8 +13,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from vecssl.data.dataset import SVGXDataset
-from vecssl.models.config import JepaConfig
-from vecssl.models.jepa import Jepa
+from vecssl.models.config import SVGMAEConfig
+from vecssl.models.svgmae import SVGMAE
 from vecssl.trainer import Trainer
 from vecssl.util import setup_logging, set_seed
 
@@ -24,28 +23,25 @@ from eval_utils import custom_collate
 logger = logging.getLogger(__name__)
 
 
-class SimpleJEPA(nn.Module):
+class SimpleSVGMAE(nn.Module):
     """
-    Minimal wrapper for testing JEPA.
-
-    The real `Jepa.forward` returns a TrainStep; this wrapper just delegates and
-    exposes a `check_gradients` helper similar to the SVG test script.
+    Minimal wrapper for testing SVGMAE.
     """
 
-    def __init__(self, cfg: JepaConfig, debug_mode: bool = False):
+    def __init__(self, cfg: SVGMAEConfig, debug_mode: bool = False):
         super().__init__()
         self.cfg = cfg
         self.debug_mode = debug_mode
         self.step_count = 0
 
-        self.model = Jepa(cfg)
+        self.model = SVGMAE(cfg)
 
-        logger.info("Created SimpleJEPA:")
+        logger.info("Created SimpleSVGMAE:")
         logger.info(f"  - max_num_groups: {cfg.max_num_groups}")
         logger.info(f"  - max_seq_len: {cfg.max_seq_len}")
-        logger.info(f"  - d_joint: {cfg.d_joint}")
+        logger.info(f"  - mask_ratio_svg: {cfg.mask_ratio_svg}")
+        logger.info(f"  - mae_depth: {cfg.mae_depth}")
         logger.info(f"  - debug_mode: {debug_mode}")
-        logger.info(f"  - use_resnet: {cfg.use_resnet}")
 
     def forward(self, batch):
         device = next(self.parameters()).device
@@ -62,8 +58,11 @@ class SimpleJEPA(nn.Module):
         # Optionally print debug info on first step
         if self.debug_mode and self.step_count == 0:
             logger.info(
-                f"JEPA forward returned TrainStep: loss={step.loss if hasattr(step, 'loss') else None}"
+                f"SVGMAE forward returned TrainStep: loss={step.loss if hasattr(step, 'loss') else None}"
             )
+            if hasattr(step, "logs") and step.logs:
+                for k, v in step.logs.items():
+                    logger.info(f"  {k}: {v}")
 
         self.step_count += 1
         return step
@@ -273,7 +272,7 @@ def create_dataloaders(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test JEPA model")
+    parser = argparse.ArgumentParser(description="Test SVG-only MAE model")
 
     # Dataset args
     parser.add_argument("--svg-dir", type=str, default="svgx_svgs", help="SVG directory")
@@ -283,7 +282,8 @@ def main():
     # Model args
     parser.add_argument("--max-num-groups", type=int, default=8, help="Max number of paths")
     parser.add_argument("--max-seq-len", type=int, default=40, help="Max sequence length")
-    parser.add_argument("--use-resnet", action="store_true", default=True, help="Use ResNet")
+    parser.add_argument("--mask-ratio-svg", type=float, default=0.75, help="SVG masking ratio")
+    parser.add_argument("--mae-depth", type=int, default=4, help="MAE encoder depth")
 
     # Training args
     parser.add_argument("--batch-size", type=int, default=4, help="Batch size")
@@ -299,7 +299,7 @@ def main():
         choices=["no", "fp16", "bf16"],
         help="Mixed precision mode",
     )
-    parser.add_argument("--tb-dir", type=str, default="runs/test_jepa", help="TensorBoard dir")
+    parser.add_argument("--tb-dir", type=str, default="runs/test_svgmae", help="TensorBoard dir")
 
     # Logging args
     parser.add_argument("--log-level", type=str, default="INFO", help="Logging level")
@@ -317,26 +317,27 @@ def main():
     )
 
     logger.info("=" * 60)
-    logger.info("[bold cyan]JEPA Test[/bold cyan]", extra={"markup": True})
+    logger.info("[bold cyan]SVGMAE Test[/bold cyan]", extra={"markup": True})
     logger.info("=" * 60)
 
-    cfg = JepaConfig()
+    cfg = SVGMAEConfig()
     cfg.max_num_groups = args.max_num_groups
     cfg.max_seq_len = args.max_seq_len
-    cfg.use_resnet = args.use_resnet
+    cfg.mask_ratio_svg = args.mask_ratio_svg
+    cfg.mae_depth = args.mae_depth
 
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(args)
 
     # Count parameters
     logger.info("Creating model...")
-    model = SimpleJEPA(cfg, debug_mode=args.debug)
+    model = SimpleSVGMAE(cfg, debug_mode=args.debug)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Total parameters: [bold]{n_params:,}[/bold]", extra={"markup": True})
 
     # Create optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     # Create trainer
     trainer = DebugTrainer(

@@ -1,13 +1,22 @@
 """
 Retrieval Evaluation Script
 
-Compute Recall@k metrics for latent space retrieval.
+Compute Precision@k metrics for latent space retrieval.
 Supports same-modal (SVG→SVG) and cross-modal (SVG↔image) retrieval.
+Supports JEPA, Contrastive, and Autoencoder encoders.
+
+Precision@k = (# correct in top-k) / k, averaged over all queries.
 
 Usage:
     python scripts/eval_retrieval.py \
         --encoder-type jepa \
         --checkpoint checkpoints/jepa/best_model.pt \
+        --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv
+
+    # Or with autoencoder:
+    python scripts/eval_retrieval.py \
+        --encoder-type autoencoder \
+        --checkpoint checkpoints/ae/checkpoint.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv
 """
 
@@ -16,12 +25,12 @@ import logging
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 
 from vecssl.util import setup_logging
 
 from eval_utils import (
     add_common_args,
-    compute_embeddings,
     create_eval_dataloader,
     load_encoder,
 )
@@ -29,62 +38,180 @@ from eval_utils import (
 logger = logging.getLogger(__name__)
 
 
-def recall_at_k(
+@torch.no_grad()
+def compute_all_embeddings(
+    model,
+    loader,
+    device: torch.device,
+    max_samples: int | None = None,
+    cache_clear_interval: int = 50,
+) -> tuple[torch.Tensor, torch.Tensor, list, list]:
+    """
+    Compute SVG and image embeddings in a single pass through the dataset.
+
+    Args:
+        model: Encoder model with encode_joint() method
+        loader: DataLoader
+        device: torch device
+        max_samples: if set, stop after roughly this many samples
+        cache_clear_interval: clear GPU cache every N batches to prevent fragmentation
+
+    Returns:
+        tuple: (z_svg [N, d], z_img [N, d], labels [N], uuids [N])
+    """
+    model.eval()
+    model.to(device)
+
+    svg_embeddings = []
+    img_embeddings = []
+    labels = []
+    uuids = []
+
+    try:
+        total_samples = len(loader.dataset)
+    except Exception:
+        total_samples = None
+
+    logger.info(
+        f"Computing embeddings: {total_samples if total_samples else 'unknown'} samples, "
+        f"batch_size={loader.batch_size}"
+    )
+
+    seen = 0
+    for batch_idx, batch in enumerate(loader):
+        # Move tensors to device
+        batch_device = {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
+
+        # Forward pass - get both modalities at once
+        joint = model.encode_joint(batch_device)
+
+        # Normalize and move to CPU immediately
+        z_svg = F.normalize(joint["svg"], dim=-1).cpu()
+        z_img = F.normalize(joint["img"], dim=-1).cpu()
+
+        svg_embeddings.append(z_svg)
+        img_embeddings.append(z_img)
+        labels.extend(batch["label"].tolist())
+        uuids.extend(batch["uuid"])
+
+        bsz = z_svg.size(0)
+        seen += bsz
+
+        # Progress logging
+        if total_samples is not None:
+            pct = min(100.0 * seen / total_samples, 100.0)
+            if (batch_idx + 1) % 10 == 0 or seen >= total_samples:
+                logger.info(f"Embedded {seen}/{total_samples} ({pct:.1f}%) samples")
+
+        # Clear GPU cache periodically to prevent memory fragmentation
+        if (batch_idx + 1) % cache_clear_interval == 0:
+            torch.cuda.empty_cache()
+
+        # Early stop if max_samples reached
+        if max_samples is not None and seen >= max_samples:
+            logger.info(f"Reached max_samples={max_samples}, stopping early.")
+            break
+
+    z_svg = torch.cat(svg_embeddings, dim=0)
+    z_img = torch.cat(img_embeddings, dim=0)
+
+    logger.info(f"Computed {z_svg.size(0)} embeddings (dim={z_svg.size(1)})")
+    return z_svg, z_img, labels, uuids
+
+
+def precision_at_k(
     query_embeddings: torch.Tensor,
     gallery_embeddings: torch.Tensor,
     query_labels: list,
     gallery_labels: list,
     ks: tuple = (1, 5, 10),
     exclude_self: bool = False,
+    chunk_size: int = 256,
 ) -> dict:
     """
-    Compute Recall@k for retrieval.
+    Compute Precision@k for retrieval in a memory-efficient way by batching queries.
+
+    Precision@k = (# correct in top-k) / k, averaged over all queries.
 
     Args:
         query_embeddings: [N_q, d] normalized query embeddings
         gallery_embeddings: [N_g, d] normalized gallery embeddings
-        query_labels: Labels for queries
-        gallery_labels: Labels for gallery
-        ks: Tuple of k values to compute
-        exclude_self: If True, exclude self-matches (for same-modal)
+        query_labels: list[int] of length N_q
+        gallery_labels: list[int] of length N_g
+        ks: tuple of k values to compute
+        exclude_self: if True and N_q == N_g, exclude self-matches for same-modal retrieval
+        chunk_size: number of queries per similarity batch
 
     Returns:
-        dict: {k: recall} for each k
+        dict: {k: precision} for each k
     """
-    # Compute cosine similarity
-    sim = query_embeddings @ gallery_embeddings.t()  # [N_q, N_g]
+    assert query_embeddings.dim() == 2 and gallery_embeddings.dim() == 2
+    assert query_embeddings.size(1) == gallery_embeddings.size(1)
 
-    if exclude_self and query_embeddings.shape[0] == gallery_embeddings.shape[0]:
-        # Exclude diagonal (self-matches)
-        sim.fill_diagonal_(-1e9)
+    device = query_embeddings.device
+    ks = tuple(sorted(ks))
+    k_max = max(ks)
 
-    N = sim.size(0)
-    recalls = dict.fromkeys(ks, 0.0)
+    N_q = query_embeddings.size(0)
+    N_g = gallery_embeddings.size(0)
 
-    for i in range(N):
-        query_label = query_labels[i]
-        if query_label < 0:
-            continue  # Skip invalid labels
+    # Make sure labels are indexable lists
+    query_labels = list(query_labels)
+    gallery_labels = list(gallery_labels)
 
-        # Get top-k indices
-        topk_idx = sim[i].topk(max(ks), dim=0).indices.tolist()
+    # Accumulators for precision
+    precision_accum = {k: [] for k in ks}
 
-        for k in ks:
-            # Check if any of top-k has same label
-            retrieved_labels = [gallery_labels[j] for j in topk_idx[:k]]
-            hits = sum(1 for lbl in retrieved_labels if lbl == query_label)
-            recalls[k] += 1.0 if hits > 0 else 0.0
+    # Precompute gallery^T once on the same device as queries
+    gallery_embeddings_t = gallery_embeddings.t()  # [d, N_g]
 
-    # Normalize
-    valid_count = sum(1 for lbl in query_labels if lbl >= 0)
+    for start in range(0, N_q, chunk_size):
+        end = min(start + chunk_size, N_q)
+        bsz = end - start
+
+        # [B, d]
+        q_chunk = query_embeddings[start:end]
+
+        # [B, N_g] cosine similarity
+        sim_chunk = q_chunk @ gallery_embeddings_t
+
+        # For same-modal retrieval, exclude diagonal self-matches
+        if exclude_self and N_q == N_g:
+            row_idx = torch.arange(bsz, device=device)
+            col_idx = torch.arange(start, end, device=device)
+            sim_chunk[row_idx, col_idx] = -1e9  # large negative so never in top-k
+
+        # Top-k over the gallery for each query in the chunk
+        topk_idx = sim_chunk.topk(k_max, dim=1).indices.cpu().tolist()
+
+        # Update precision counts
+        for row_offset, idxs in enumerate(topk_idx):
+            q_idx = start + row_offset
+            q_label = query_labels[q_idx]
+            if q_label < 0:
+                continue  # skip invalid labels
+
+            # Convert indices → labels for this query
+            retrieved_labels = [gallery_labels[j] for j in idxs]
+
+            for k in ks:
+                # Precision = fraction of top-k with correct label
+                correct = sum(1 for lbl in retrieved_labels[:k] if lbl == q_label)
+                precision_accum[k].append(correct / k)
+
+    # Average precision over all queries
+    precisions = {}
     for k in ks:
-        recalls[k] /= max(1, valid_count)
+        if precision_accum[k]:
+            precisions[k] = sum(precision_accum[k]) / len(precision_accum[k])
+        else:
+            precisions[k] = 0.0
 
-    return recalls
+    return precisions
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Retrieval evaluation (Recall@k)")
+    parser = argparse.ArgumentParser(description="Retrieval evaluation (Precision@k)")
     parser = add_common_args(parser)
 
     # Encoder args
@@ -92,7 +219,7 @@ def main():
         "--encoder-type",
         type=str,
         required=True,
-        choices=["jepa", "contrastive"],
+        choices=["jepa", "contrastive", "autoencoder"],
         help="Type of encoder",
     )
     parser.add_argument(
@@ -110,19 +237,31 @@ def main():
         default=[1, 5, 10],
         help="k values for Recall@k",
     )
+    parser.add_argument(
+        "--max-eval-samples",
+        type=int,
+        default=None,
+        help="Max samples to evaluate (for debugging or memory-constrained runs)",
+    )
+    parser.add_argument(
+        "--cache-clear-interval",
+        type=int,
+        default=50,
+        help="Clear GPU cache every N batches to prevent memory fragmentation",
+    )
 
     args = parser.parse_args()
 
     setup_logging(level=args.log_level, rich_tracebacks=True)
     logger.info("=" * 60)
-    logger.info("Retrieval Evaluation (Recall@k)")
+    logger.info("Retrieval Evaluation (Precision@k)")
     logger.info("=" * 60)
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
     # Load frozen encoder
-    encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type, device)
+    encoder, cfg = load_encoder(Path(args.checkpoint), args.encoder_type)
 
     # Create dataloader
     loader = create_eval_dataloader(
@@ -135,45 +274,53 @@ def main():
         num_workers=args.num_workers,
     )
 
-    # Compute embeddings for both modalities
-    logger.info("Computing SVG embeddings...")
-    z_svg, labels_svg, uuids_svg = compute_embeddings(encoder, loader, device, modality="svg")
+    # Compute embeddings for both modalities in a single pass
+    logger.info("Computing embeddings (single-pass for both modalities)...")
+    z_svg, z_img, labels, uuids = compute_all_embeddings(
+        encoder,
+        loader,
+        device,
+        max_samples=args.max_eval_samples,
+        cache_clear_interval=args.cache_clear_interval,
+    )
 
-    logger.info("Computing image embeddings...")
-    z_img, labels_img, uuids_img = compute_embeddings(encoder, loader, device, modality="img")
+    # Note for autoencoder
+    # if args.encoder_type == "autoencoder":
+    #     logger.info("Note: Autoencoder uses same latent for SVG and image.")
+    #     logger.info("      Cross-modal retrieval will be trivial (identical embeddings).")
 
     ks = tuple(args.ks)
 
     # Same-modal retrieval: SVG → SVG
     logger.info("Computing SVG→SVG retrieval...")
-    recalls_svg2svg = recall_at_k(z_svg, z_svg, labels_svg, labels_svg, ks=ks, exclude_self=True)
+    precisions_svg2svg = precision_at_k(z_svg, z_svg, labels, labels, ks=ks, exclude_self=True)
 
     logger.info("SVG → SVG Retrieval:")
-    for k, v in recalls_svg2svg.items():
-        logger.info(f"  Recall@{k}: {v * 100:.2f}%")
+    for k, v in precisions_svg2svg.items():
+        logger.info(f"  Precision@{k}: {v * 100:.2f}%")
 
     # Cross-modal retrieval: SVG → Image
-    logger.info("Computing SVG→Image retrieval...")
-    recalls_svg2img = recall_at_k(z_svg, z_img, labels_svg, labels_img, ks=ks, exclude_self=False)
+    # logger.info("Computing SVG→Image retrieval...")
+    # recalls_svg2img = recall_at_k(z_svg, z_img, labels, labels, ks=ks, exclude_self=False)
 
-    logger.info("SVG → Image Retrieval:")
-    for k, v in recalls_svg2img.items():
-        logger.info(f"  Recall@{k}: {v * 100:.2f}%")
+    # logger.info("SVG → Image Retrieval:")
+    # for k, v in recalls_svg2img.items():
+    # logger.info(f"  Recall@{k}: {v * 100:.2f}%")
 
     # Cross-modal retrieval: Image → SVG
-    logger.info("Computing Image→SVG retrieval...")
-    recalls_img2svg = recall_at_k(z_img, z_svg, labels_img, labels_svg, ks=ks, exclude_self=False)
+    # logger.info("Computing Image→SVG retrieval...")
+    # recalls_img2svg = recall_at_k(z_img, z_svg, labels, labels, ks=ks, exclude_self=False)
 
-    logger.info("Image → SVG Retrieval:")
-    for k, v in recalls_img2svg.items():
-        logger.info(f"  Recall@{k}: {v * 100:.2f}%")
+    # logger.info("Image → SVG Retrieval:")
+    # for k, v in recalls_img2svg.items():
+    # logger.info(f"  Recall@{k}: {v * 100:.2f}%")
 
     # Summary
-    logger.info("=" * 60)
-    logger.info("Summary:")
-    logger.info(f"  SVG→SVG   Recall@1: {recalls_svg2svg[1] * 100:.2f}%")
-    logger.info(f"  SVG→Image Recall@1: {recalls_svg2img[1] * 100:.2f}%")
-    logger.info(f"  Image→SVG Recall@1: {recalls_img2svg[1] * 100:.2f}%")
+    # logger.info("=" * 60)
+    # logger.info("Summary:")
+    # logger.info(f"  SVG→SVG   Recall@1: {recalls_svg2svg[1] * 100:.2f}%")
+    # logger.info(f"  SVG→Image Recall@1: {recalls_svg2img[1] * 100:.2f}%")
+    # logger.info(f"  Image→SVG Recall@1: {recalls_img2svg[1] * 100:.2f}%")
     logger.info("Done.")
 
 

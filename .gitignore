@@ -8,6 +8,10 @@ datasets/
 google_fonts/
 data/
 
+# Logs
+*.err
+*.out
+
 # PCA files
 pca_img.png
 pca_svg.png

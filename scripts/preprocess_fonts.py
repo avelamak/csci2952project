@@ -8,6 +8,7 @@ from argparse import ArgumentParser
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import logging
+import re
 import pandas as pd
 import torch
 import cairosvg
@@ -51,10 +52,37 @@ def _init_worker(output_svg_folder, output_img_folder, to_tensor):
     _TO_TENSOR = to_tensor
 
 
-def preprocess_glyph(svg_path: Path) -> dict | None:
+def get_family_name(font_folder_name: str) -> str:
+    """Extract family name from font folder name."""
+    name = font_folder_name
+    # Remove variable font axes notation [...]
+    name = re.sub(r"\[.*\]$", "", name)
+    # Remove style suffixes
+    name = re.sub(
+        r"-(Regular|Bold|Italic|Light|Medium|SemiBold|ExtraBold|Black|Thin|ExtraLight|"
+        r"BoldItalic|LightItalic|MediumItalic|SemiBoldItalic|ExtraBoldItalic|"
+        r"BlackItalic|ThinItalic|ExtraLightItalic|Oblique)+$",
+        "",
+        name,
+    )
+    return name
+
+
+def family_to_labels(svg_paths):
+    """Extract unique font family names from SVG paths."""
+    families = set()
+    for path in svg_paths:
+        name = get_family_name(path.parent.name)
+        families.add(name)
+    return sorted(families)
+
+
+def preprocess_glyph(svg_path: Path, family_labels: list) -> dict | None:
     """Process a single glyph SVG."""
     try:
         font_name = svg_path.parent.name
+        family_name = get_family_name(font_name)
+        family_label = family_labels.index(family_name)
         char = filename_to_char(svg_path.name)
         label = char_to_label(char)
         uuid = f"{font_name}_{svg_path.stem}"
@@ -88,12 +116,19 @@ def preprocess_glyph(svg_path: Path) -> dict | None:
         metadata = {
             "uuid": uuid,
             "font_name": font_name,
+            "family_name": family_name,
+            "family_label": family_label,
             "char": char,
             "label": label,
             "total_len": sum(len_groups),
             "nb_groups": len(len_groups),
             "max_len_group": max(len_groups) if len_groups else 0,
         }
+
+        # Skip samples with no valid path data (causes NaN in training)
+        if metadata["nb_groups"] == 0 or metadata["max_len_group"] == 0:
+            logger.debug(f"Skipping {uuid}: no valid path data")
+            return None
 
         # Save preprocessed SVG or tensor
         if _OUT_SVG:
@@ -160,6 +195,8 @@ def main():
     progress = make_progress(console)
     batch_size = args.workers * 32
 
+    family_labels = family_to_labels(svg_files)
+
     with progress:
         task = progress.add_task("Processing glyphs", total=len(svg_files))
 
@@ -172,7 +209,7 @@ def main():
                 batch_end = min(batch_start + batch_size, len(svg_files))
                 batch = svg_files[batch_start:batch_end]
 
-                futures = {executor.submit(preprocess_glyph, p): p for p in batch}
+                futures = {executor.submit(preprocess_glyph, p, family_labels): p for p in batch}
 
                 for future in as_completed(futures):
                     result = future.result()

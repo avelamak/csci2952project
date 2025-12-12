@@ -17,7 +17,7 @@ class _DefaultConfig:
 
         self.model_type = "transformer"  # "transformer" ("lstm" implementation is work in progress)
 
-        self.encode_stages = 1  # One-stage or two-stage: 1 | 2
+        self.encode_stages = 2  # One-stage or two-stage: 1 | 2
         self.decode_stages = 1  # One-stage or two-stage: 1 | 2
 
         self.use_resnet = True  # Use extra fully-connected residual blocks after Encoder
@@ -52,6 +52,12 @@ class _DefaultConfig:
         )  # Concatenated sequence length for baselines
 
         self.num_groups_proposal = self.max_num_groups  # Number of predicted paths, default: N_P
+
+        self.lr = 1e-4
+        self.batch_size = 64
+        self.epochs = 100
+
+        self.DINO_layer = -1  # DINO layer to use (-1 is the last layer)
 
     def get_model_args(self):
         model_args = []
@@ -134,8 +140,11 @@ class ContrastiveConfig(_DefaultConfig):
     def __init__(self):
         super().__init__()
         self.contrastive_logit_scale = 0.07
-        self.joint_dim = 512  # Joint embedding dimension
+        self.d_joint = 768
         self.use_group = True
+        self.d_model = self.d_joint
+        self.use_precomputed_dino = True
+        self.dino_dir = "/oscar/scratch/zzhan215/google_fonts_processed_reduced/dino"
 
 
 class JepaConfig(_DefaultConfig):
@@ -158,3 +167,65 @@ class JepaConfig(_DefaultConfig):
         self.predictor_mlp_num_layers = 2
         self.predictor_mlp_hidden_dim = 768
         self.predictor_mlp_dropout = 0.1
+
+        # Precomputed DINO embeddings support
+        self.use_precomputed_dino = False
+
+
+class SVGMAEConfig(_DefaultConfig):
+    """Config for SVG-only Masked Autoencoder"""
+
+    def __init__(self):
+        super().__init__()
+
+        self.encode_stages = 2  # Use 2-stage structure for per-group encoding
+        self.decode_stages = 1  # Single-stage decoder for reconstructing tokens
+        self.use_vae = False  # No VAE for MAE
+        self.use_resnet = False
+
+        # Masking ratio
+        self.mask_ratio_svg = 0.75  # Mask 75% of SVG groups
+
+        # MAE encoder (processes visible groups + CLS)
+        self.mae_depth = 4
+        self.mae_num_heads = 8
+        self.mae_mlp_ratio = 4.0
+        self.mae_dropout = 0.1
+
+        # Loss weights (using SVGLoss pattern)
+        self.loss_cmd_weight = 1.0
+        self.loss_args_weight = 2.0
+
+
+class MultiMAEConfig(_DefaultConfig):
+    """Config for SVG + Image Multi-modal Masked Autoencoder"""
+
+    def __init__(self):
+        super().__init__()
+
+        self.encode_stages = 2  # Use 2-stage structure for per-group encoding
+        self.decode_stages = 1  # Single-stage decoder for reconstructing tokens
+        self.use_vae = False  # No VAE for MAE
+        self.use_resnet = False
+
+        # Masking ratios
+        self.mask_ratio_svg = 0.5  # Mask 50% of SVG groups
+        self.mask_ratio_img = 0.75  # Mask 75% of image patches
+
+        # Shared MAE encoder (processes visible SVG + visible image + CLS)
+        self.mae_depth = 8
+        self.mae_num_heads = 8
+        self.mae_mlp_ratio = 4.0
+        self.mae_dropout = 0.1
+
+        # DINO configuration
+        self.dino_model_name = "facebook/dinov2-base"
+        self.train_dino = False
+        self.use_precomputed_dino_patches = False
+
+        # Image projection (768 -> d_model)
+        self.img_proj_dim = 768  # DINO hidden size
+
+        # Loss weights
+        self.loss_cmd_weight = 1.0
+        self.loss_args_weight = 2.0
