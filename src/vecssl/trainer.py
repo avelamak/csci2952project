@@ -109,7 +109,7 @@ class Trainer:
                     wandb_init["entity"] = self.wandb_entity
                 if wandb_init:
                     init_kwargs["wandb"] = wandb_init
-
+            
             self.accelerator.init_trackers(
                 project_name=self.wandb_project or "training",
                 config=tracker_config,
