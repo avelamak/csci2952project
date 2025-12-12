@@ -38,10 +38,8 @@ def decode_svg_from_cmd_args(
     pad_val: int = -1,
 ) -> SVG:
     """
-    Decode commands and args back to an SVG object, consistent with DeepSVG decode.
-
-    Flattens all groups into a single sequence and lets SVGTensor handle
-    special tokens (EOS/SOS/z) internally.
+    Decode commands + args into an SVG, keeping all groups and stripping
+    EOS/SOS/padded rows so SVG.from_tensor only sees real drawing commands.
 
     Args:
         commands: [T], [G, S], or [B, G, S] long tensor of command indices
@@ -52,30 +50,55 @@ def decode_svg_from_cmd_args(
     Returns:
         SVG object that can be saved via .save_svg()
     """
+    commands = commands.detach().cpu().long()
+    args = args.detach().cpu().float()
+
     # Strip batch dim if present: [B, G, S] -> [G, S]
     if commands.ndim == 3:
         commands = commands[0]
         args = args[0]
 
-    # If we have groups [G, S], flatten to [T]
+    # If grouped, flatten (G, S) -> T
     if commands.ndim == 2:
         G, S = commands.shape
         commands = commands.reshape(-1)  # [T]
         args = args.reshape(-1, args.size(-1))  # [T, n_args]
+    elif commands.ndim == 1:
+        # Already flat [T]
+        pass
+    else:
+        raise ValueError(f"Unexpected commands ndim={commands.ndim} in decode")
 
-    # Now commands: [T], args: [T, n_args] - what SVGTensor expects
-    commands = commands.detach().cpu()
-    args = args.detach().cpu()
+    cmds_list = SVGTensor.COMMANDS_SIMPLIFIED
+    eos_idx = cmds_list.index("EOS")
+    sos_idx = cmds_list.index("SOS")
 
-    # Let SVGTensor handle special tokens (EOS/SOS/z) internally
-    tensor_pred = SVGTensor.from_cmd_args(
+    # 1) Drop EOS/SOS meta tokens (including EOS-as-padding)
+    meta_mask = (commands != eos_idx) & (commands != sos_idx)
+
+    # 2) Drop rows where all args are PAD (-1): completely empty
+    if pad_val is not None:
+        nonempty_mask = ~(args == pad_val).all(dim=-1)
+    else:
+        nonempty_mask = torch.ones_like(commands, dtype=torch.bool)
+
+    keep_mask = meta_mask & nonempty_mask
+
+    commands = commands[keep_mask]
+    args = args[keep_mask]
+
+    if commands.numel() == 0:
+        # Nothing real to draw
+        return SVG([], viewbox=Bbox(viewbox_size))
+
+    svg_tensor = SVGTensor.from_cmd_args(
         commands,
         args,
         PAD_VAL=pad_val,
     )
 
     svg = SVG.from_tensor(
-        tensor_pred.data,
+        svg_tensor.data,
         viewbox=Bbox(viewbox_size),
         allow_empty=True,
     )
