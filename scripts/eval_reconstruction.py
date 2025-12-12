@@ -9,6 +9,14 @@ Usage:
     python scripts/eval_reconstruction.py \
         --ae-ckpt checkpoints/decoder/best_model.pt \
         --svg-dir data/fonts_svg --img-dir data/fonts_img --meta data/fonts_meta.csv
+
+    python scripts/eval_reconstruction.py \
+        --ae-ckpt /oscar/scratch/zzhan215/exps/svgvae/best_model.pt \
+        --svg-dir /oscar/scratch/avelama1/google_fonts_svg_sample_dataset/svg/ \
+        --img-dir /oscar/scratch/avelama1/google_fonts_svg_sample_dataset/img/ \
+        --meta /oscar/scratch/avelama1/google_fonts_svg_sample_dataset/metadata.csv \
+        --out-dir /oscar/scratch/avelama1/reconstruction/svgvae
+
 """
 
 import argparse
@@ -16,11 +24,17 @@ import logging
 from pathlib import Path
 
 import torch
+import cairosvg
 
 from vecssl.data.dataset import SVGXDataset
 from vecssl.models.config import _DefaultConfig
 from vecssl.models.model import SVGTransformer
 from vecssl.util import setup_logging
+from vecssl.data.svg_tensor import SVGTensor
+from vecssl.data.svg import SVG
+from vecssl.data.svg_path import SVGPath
+from vecssl.data.geom import Bbox
+
 
 from eval_utils import add_common_args, custom_collate
 from torch.utils.data import DataLoader
@@ -66,7 +80,7 @@ def load_autoencoder(checkpoint_path: Path, device: torch.device):
             k.replace("model.", ""): v for k, v in state_dict.items() if k.startswith("model.")
         }
 
-    model.load_state_dict(state_dict)
+    model.load_state_dict(state_dict, strict=False)
     model.to(device)
     model.eval()
 
@@ -86,6 +100,7 @@ def reconstruct_batch(model, batch, device):
     """
     commands = batch["commands"].to(device)  # [B, G, S]
     args = batch["args"].to(device)  # [B, G, S, n_args]
+    name = batch["uuid"]
 
     # Use greedy sampling with encoding from input
     commands_y, args_y = model.greedy_sample(
@@ -98,7 +113,7 @@ def reconstruct_batch(model, batch, device):
         temperature=0.0001,
     )
 
-    return commands_y.cpu(), args_y.cpu(), commands.cpu(), args.cpu()
+    return commands_y.cpu(), args_y.cpu(), commands.cpu(), args.cpu(), name
 
 
 def command_accuracy(pred_cmds, tgt_cmds, pad_val=-1):
@@ -152,6 +167,65 @@ def arg_errors(pred_args, tgt_args, pad_val=-1):
 
     return l1.item(), l2.item()
 
+def decode_svg_from_cmd_args(commands, args, viewbox_size=256, pad_val=-1) -> SVG:
+    """
+    Decode commands and args tensors back to an SVG object.
+
+    Filters out SOS/EOS/PAD tokens.
+
+    Supports both single-group (S,) and multi-group (G, S) tensors.
+    For multi-group input, all groups are decoded and combined into one SVG.
+    """
+    commands = commands.detach().cpu().long()
+    args = args.detach().cpu().float()
+
+    eos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("EOS")
+    sos_idx = SVGTensor.COMMANDS_SIMPLIFIED.index("SOS")
+
+    # Handle both (S,) and (G, S) shapes
+    if commands.ndim == 1:
+        commands_list = [commands]
+        args_list = [args]
+    else:
+        # Multi-group case (G, S) and (G, S, n_args)
+        commands_list = list(commands)
+        args_list = list(args)
+
+    # Decode each group
+    svg_path_groups = []
+    for cmd, arg in zip(commands_list, args_list, strict=False):
+        # Filter out SOS/EOS/PAD tokens
+        valid_mask = (cmd != pad_val) & (cmd != eos_idx) & (cmd != sos_idx)
+
+        if not valid_mask.any():
+            # Empty group - skip
+            continue
+
+        cmd_valid = cmd[valid_mask]
+        arg_valid = arg[valid_mask]
+
+        try:
+            svg_tensor = SVGTensor.from_cmd_args(cmd_valid, arg_valid, PAD_VAL=pad_val)
+            tensor_data = svg_tensor.data
+            # SVGPath.from_tensor returns an SVGPathGroup
+            svg_path_group = SVGPath.from_tensor(tensor_data, allow_empty=True)
+            svg_path_groups.append(svg_path_group)
+        except Exception as e:
+            logger.warning(f"Failed to decode group: {e}")
+            continue
+
+    if not svg_path_groups:
+        return SVG([], viewbox=Bbox(viewbox_size))
+
+    return SVG(svg_path_groups, viewbox=Bbox(viewbox_size))
+
+def svg_to_png(svg_path: str, png_path: str):
+    """Convert SVG to PNG for easier viewing."""
+    try:
+        cairosvg.svg2png(url=svg_path, write_to=png_path, background_color="#ffffff")
+    except Exception as e:
+        logger.warning(f"Failed to convert {svg_path} to PNG: {e}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate SVG reconstruction quality")
@@ -164,6 +238,7 @@ def main():
         required=True,
         help="Path to autoencoder checkpoint",
     )
+    parser.add_argument("--out-dir", type=str, default="recon_multimae", help="Output directory")
 
     args = parser.parse_args()
 
@@ -185,14 +260,15 @@ def main():
         meta_filepath=args.meta,
         max_num_groups=args.max_num_groups,
         max_seq_len=args.max_seq_len,
-        split="test",
+        split="train",
+        train_ratio=1.0,
         seed=42,
         already_preprocessed=True,
     )
 
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=1,
         shuffle=False,
         num_workers=args.num_workers,
         collate_fn=custom_collate,
@@ -208,7 +284,29 @@ def main():
     n_batches = 0
 
     for batch in loader:
-        pred_cmds, pred_args, tgt_cmds, tgt_args = reconstruct_batch(model, batch, device)
+        pred_cmds, pred_args, tgt_cmds, tgt_args, name = reconstruct_batch(model, batch, device)
+
+        out_dir = Path(args.out_dir+f'/{name[0]}')
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ground truth SVG
+        svg_gt = decode_svg_from_cmd_args(tgt_cmds[0], tgt_args[0], viewbox_size=256)
+        gt_path = out_dir / f"gt.svg"
+        svg_gt.save_svg(str(gt_path))
+        logger.info(f"Saved ground truth SVG to {gt_path}")
+        # if args.save_png:
+        svg_to_png(str(gt_path), str(gt_path.with_suffix(".png")))
+
+        # Reconstructed SVG
+        svg_recon = decode_svg_from_cmd_args(
+            pred_cmds[0], pred_args[0], viewbox_size=256
+        )
+        recon_path = out_dir / f"recon.svg"
+        svg_recon.save_svg(str(recon_path))
+        logger.info(f"Saved reconstructed SVG to {recon_path}")
+        # if args.save_png:
+        svg_to_png(str(recon_path), str(recon_path.with_suffix(".png")))
+
 
         ca = command_accuracy(pred_cmds, tgt_cmds, pad_val=-1)
         l1, l2 = arg_errors(pred_args, tgt_args, pad_val=-1)
