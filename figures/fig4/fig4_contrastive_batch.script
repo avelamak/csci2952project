@@ -47,12 +47,7 @@ python figures/fig4/fig4.py \
      /oscar/scratch/zzhan215/exps/contrastive_7/best_model.pt \
      /oscar/scratch/zzhan215/exps/contrastive_temp/best_model.pt \
      /oscar/scratch/zzhan215/exps/contrastive_temp_7/best_model.pt \
-     /oscar/scratch/zzhan215/exps/jepa/best_model.pt \
-     /oscar/scratch/zzhan215/exps/jepa_7/best_model.pt \
-     /oscar/scratch/zzhan215/exps/jepa_default/best_model.pt \
-     /oscar/scratch/zzhan215/exps/jepa_layer/best_model.pt \
-     /oscar/scratch/zzhan215/exps/jepa_layer_7/best_model.pt \
-     /oscar/scratch/zzhan215/exps/multimae/best_model.pt \
-     /oscar/scratch/zzhan215/exps/svgvae/best_model.pt \
- --model-types contrastive contrastive contrastive contrastive jepa jepa jepa jepa jepa multimae svgmae \
- --model-labels contrastive contrastive_7 contrastive_temp contrastive_temp_7 jepa jepa_7 jepa_default jepa_layer jepa_layer_7 multimae svgmae
+ --model-types contrastive contrastive contrastive contrastive \
+ --model-labels "$\\tau=0.07,\\;\\ell=12$" "$\\tau=0.07,\\;\\ell=7$" "$\\tau=0.1,\\;\\ell=12$" "$\\tau=0.1,\\;\\ell=7$" \
+ --out-dir "pca_contrastive.png" \
+ --title "PCA Contrastive"

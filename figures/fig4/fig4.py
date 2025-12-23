@@ -1,6 +1,7 @@
 import torch
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
 import argparse
 import numpy as np
 
@@ -55,17 +56,17 @@ def run_pca(embeddings, tag):
     collapse_score = explained[0] / explained.sum()
     logging.info(f"Collapse Score = {collapse_score:.4f} (≈1.0 means collapsed)")
 
-    # Individual plot
-    plt.figure(figsize=(6, 4))
-    plt.plot(np.cumsum(explained))
-    plt.xlabel("Principal Component")
-    plt.ylabel("Cumulative Variance Explained")
-    plt.title(f"PCA: {tag}")
-    plt.grid()
+    # # Individual plot
+    # plt.figure(figsize=(6, 4))
+    # plt.plot(np.cumsum(explained))
+    # plt.xlabel("Principal Component")
+    # plt.ylabel("Cumulative Variance Explained")
+    # plt.title(f"PCA: {tag}")
+    # plt.grid()
 
-    plot_path = f"pca_{tag}.png"
-    plt.savefig(plot_path)
-    logging.info(f"[saved] {plot_path}")
+    # plot_path = f"pca_{tag}.png"
+    # plt.savefig(plot_path)
+    # logging.info(f"[saved] {plot_path}")
 
     return explained
 
@@ -149,12 +150,16 @@ def load_model_by_type(model_type, device):
         cfg = MultiMAEConfig()
         return MultiMAE(cfg).to(device)
 
-    elif model_type == "svgmae":
-        from vecssl.models.svgmae import SVGMAE
-        from vecssl.models.config import SVGMAEConfig
+    elif model_type == "svgae":
+        import sys
+        import os
 
-        cfg = SVGMAEConfig()
-        return SVGMAE(cfg).to(device)
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+        from scripts.test_svg_autoencoder import SimpleSVGAutoencoder
+        from vecssl.models.config import _DefaultConfig
+
+        cfg = _DefaultConfig()
+        return SimpleSVGAutoencoder(cfg).to(device)
 
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -176,6 +181,9 @@ def main():
     parser.add_argument("--model-types", nargs="+", required=True)
     parser.add_argument("--model-labels", nargs="+", required=True)
 
+    parser.add_argument("--out-dir", type=str)
+    parser.add_argument("--title", type=str)
+
     parser.add_argument("--device", type=str, default="cpu")
     args = parser.parse_args()
 
@@ -188,7 +196,8 @@ def main():
     device = torch.device(args.device)
 
     # Load dataset
-    dataloader = create_dataloaders(args, max_samples=100)
+    # dataloader = create_dataloaders(args, max_samples=100)
+    dataloader = create_dataloaders(args)
 
     # Results
     all_results_svg = {}
@@ -212,6 +221,10 @@ def main():
         # Extract embeddings
         svg_embeds, img_embeds = get_embeddings(model, dataloader)
 
+        # load DINO embeddings using contrastive model
+        contrastive = load_model_by_type("contrastive", device)
+        _, img_embeds = get_embeddings(contrastive, dataloader)
+
         # PCA only if embeddings exist
         if svg_embeds is not None:
             explained_svg = run_pca(svg_embeds, tag=f"{label}_svg")
@@ -230,22 +243,32 @@ def main():
     # ---------------------------------------------------------
     plt.figure(figsize=(8, 5))
 
+    fontdict = {
+        "fontsize": 10,
+        "fontweight": "normal",
+        "family": "serif",
+        "color": "black",
+    }
+
+    legend_font = FontProperties(family="serif", size=10, weight="normal")
+
     for label, curve in all_results_svg.items():
-        plt.plot(np.cumsum(curve), label=f"{label} (svg)")
+        plt.plot(np.cumsum(curve), label=f"{label}")
 
     for label, curve in all_results_img.items():
-        plt.plot(np.cumsum(curve), linestyle="--", label=f"{label} (img)")
+        plt.plot(np.cumsum(curve), linestyle="--", color="purple", label="DINOv2 Image")
+        break
 
-    plt.xlabel("Principal Component")
-    plt.ylabel("Cumulative Variance Explained")
-    plt.title("PCA Comparison Across Models")
+    plt.xlabel("Principal Component", fontdict=fontdict)
+    plt.ylabel("Cumulative Variance Explained", fontdict=fontdict)
+    plt.title(args.title, fontdict=fontdict)
     plt.grid()
 
     # Legend outside the plot
-    plt.legend(loc="center left", bbox_to_anchor=(1, 0.5))
+    plt.legend(loc="center left", bbox_to_anchor=(1, 0.5), prop=legend_font)
 
     plt.tight_layout()  # Adjust layout so everything fits
-    outpath = "pca_all_models.png"
+    outpath = args.out_dir
     plt.savefig(outpath, bbox_inches="tight")  # Include the legend in saved figure
     logging.info(f"[saved] {outpath}")
 

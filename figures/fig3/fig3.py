@@ -4,6 +4,57 @@ import matplotlib.image as mpimg
 import cairosvg
 from io import BytesIO
 
+import xml.etree.ElementTree as ET
+
+
+def thicken_svg(svg_string, factor=2.0):
+    try:
+        root = ET.fromstring(svg_string)
+
+        # namespaces fix
+        ET.register_namespace("", "http://www.w3.org/2000/svg")
+
+        for elem in root.iter():
+            # Process explicit stroke-width attributes
+            if "stroke-width" in elem.attrib:
+                try:
+                    w = float(elem.attrib["stroke-width"])
+                    elem.attrib["stroke-width"] = str(w * factor)
+                except ValueError:
+                    pass
+
+            # Sometimes stroke styles are inside style="stroke-width: X;"
+            if "style" in elem.attrib:
+                style = elem.attrib["style"]
+                parts = style.split(";")
+                new_parts = []
+                changed = False
+
+                for p in parts:
+                    if "stroke-width" in p:
+                        try:
+                            key, val = p.split(":")
+                            w = float(val)
+                            new_parts.append(f"{key}:{w * factor}")
+                            changed = True
+                        except (ValueError, TypeError):
+                            new_parts.append(p)
+                    else:
+                        new_parts.append(p)
+
+                if changed:
+                    elem.attrib["style"] = ";".join(new_parts)
+
+            # If element has a stroke but no width, set default thick width
+            elif "stroke" in elem.attrib and "stroke-width" not in elem.attrib:
+                elem.attrib["stroke-width"] = str(1.0 * factor)
+
+        return ET.tostring(root, encoding="unicode")
+
+    except ET.ParseError:
+        # If SVG parsing fails, return original
+        return svg_string
+
 
 def make_figure(rows, models_queries_count):
     num_retrievals = 5
@@ -21,7 +72,7 @@ def make_figure(rows, models_queries_count):
     fontdict = {
         "fontsize": 18,
         "fontweight": "normal",
-        "family": "Times New Roman",
+        "family": "serif",
         "color": "black",
     }
 
@@ -134,132 +185,86 @@ def make_figure(rows, models_queries_count):
 
 
 def main():
-    # Example SVG queries (3 per model)
-    input_svgs = [
-        "<svg width='64' height='64'><circle cx='32' cy='32' r='20' stroke='black' fill='none'/></svg>",
-        "<svg width='64' height='64'><rect x='10' y='10' width='40' height='40' stroke='black' fill='none'/></svg>",
-        "<svg width='64' height='64'><polygon points='32,10 54,54 10,54' stroke='black' fill='none'/></svg>",
+    import os
+
+    base_dir = "/oscar/scratch/zzhan215/retrieval/"
+
+    # --- EDIT THIS LIST TO ADD ANY NUMBER OF FOLDERS ---
+    folder_names = [
+        "AbhayaLibre-Medium_upper_Z",
+        "Gabriela-Regular_6",
+        "SpaceMono-BoldItalic_lower_e",
     ]
 
-    # Example unique reconstructions for each query
-    reconstructions = {
-        "SVG AE": [
-            [
-                "<svg width='64' height='64'><circle cx='30' cy='30' r='22' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='32' cy='32' r='21' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='34' cy='34' r='20' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='36' cy='36' r='19' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='38' cy='38' r='18' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><rect x='10' y='10' width='40' height='40' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='11' y='11' width='39' height='39' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='12' y='12' width='38' height='38' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='13' y='13' width='37' height='37' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='14' y='14' width='36' height='36' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><polygon points='32,10 54,54 10,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='34,10 52,54 12,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='36,10 50,54 14,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='38,10 48,54 16,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='40,10 46,54 18,54' stroke='black' fill='none'/></svg>",
-            ],
-        ],
-        "MAE": [
-            [
-                "<svg width='64' height='64'><circle cx='32' cy='32' r='18' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='31' cy='31' r='19' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='30' cy='30' r='20' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='29' cy='29' r='21' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='28' cy='28' r='22' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><rect x='11' y='14' width='40' height='36' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='12' y='15' width='39' height='35' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='13' y='16' width='38' height='34' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='14' y='17' width='37' height='33' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='15' y='18' width='36' height='32' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><polygon points='32,10 54,54 10,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='32,10 52,54 12,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='32,10 50,54 14,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='32,10 48,54 16,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='32,10 46,54 18,54' stroke='black' fill='none'/></svg>",
-            ],
-        ],
-        "JEPA": [
-            [
-                "<svg width='64' height='64'><circle cx='32' cy='32' r='20' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='33' cy='31' r='19' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='34' cy='30' r='18' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='35' cy='29' r='17' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='36' cy='28' r='16' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><rect x='10' y='10' width='42' height='42' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='11' y='11' width='41' height='41' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='12' y='12' width='40' height='40' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='13' y='13' width='39' height='39' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='14' y='14' width='38' height='38' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><polygon points='32,10 54,54 10,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='31,10 53,54 11,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='30,10 52,54 12,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='29,10 51,54 13,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='28,10 50,54 14,54' stroke='black' fill='none'/></svg>",
-            ],
-        ],
-        "Contrastive": [
-            [
-                "<svg width='64' height='64'><circle cx='31' cy='31' r='19' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='32' cy='32' r='18' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='33' cy='33' r='17' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='34' cy='34' r='16' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><circle cx='35' cy='35' r='15' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><rect x='13' y='13' width='36' height='36' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='14' y='14' width='35' height='35' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='15' y='15' width='34' height='34' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='16' y='16' width='33' height='33' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><rect x='17' y='17' width='32' height='32' stroke='black' fill='none'/></svg>",
-            ],
-            [
-                "<svg width='64' height='64'><polygon points='32,10 54,54 10,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='33,10 53,54 11,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='34,10 52,54 12,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='35,10 51,54 13,54' stroke='black' fill='none'/></svg>",
-                "<svg width='64' height='64'><polygon points='36,10 50,54 14,54' stroke='black' fill='none'/></svg>",
-            ],
-        ],
+    # Map directory names → pretty model names
+    model_map = {
+        "svgvae": "SVG AE",
+        "multimae": "MAE",
+        "jepa": "JEPA",
+        "contrastive": "Contrastive",
     }
 
-    rows = []
-    models_queries_count = {}
+    models = ["svgvae", "multimae", "jepa", "contrastive"]
 
-    # Convert SVGs to in-memory PNGs and store them
-    for model, model_queries in reconstructions.items():
-        models_queries_count[model] = len(model_queries)
-        for q_idx, svg_code in enumerate(input_svgs):
-            # Query image in-memory
+    rows = []
+    models_queries_count = {model_map[m]: 0 for m in models}
+
+    for folder_name in folder_names:
+        for model in models:
+            model_dir = os.path.join(base_dir, model, folder_name)
+
+            gt_path = os.path.join(model_dir, "gt.svg")
+            retrieval_paths = [os.path.join(model_dir, f"rank{i}.svg") for i in range(1, 6)]
+
+            if not os.path.exists(gt_path):
+                continue
+
+            # ---- Load GT (query) ----
+            with open(gt_path, "r") as f:
+                gt_svg = f.read()
+
+            gt_svg = thicken_svg(gt_svg, factor=6.0)
+
             query_buf = BytesIO()
-            cairosvg.svg2png(bytestring=svg_code.encode("utf-8"), write_to=query_buf)
+            cairosvg.svg2png(bytestring=gt_svg.encode("utf-8"), write_to=query_buf)
             query_buf.seek(0)
 
-            # Retrieval images in-memory (unique per query)
+            # ---- Load retrievals ----
             retrieval_bufs = []
-            for r_svg in model_queries[q_idx]:
+            for r_path in retrieval_paths:
+                if not os.path.exists(r_path):
+                    continue
+
+                with open(r_path, "r") as f:
+                    r_svg = f.read()
+
+                r_svg = thicken_svg(r_svg, factor=6.0)
+
                 r_buf = BytesIO()
                 cairosvg.svg2png(bytestring=r_svg.encode("utf-8"), write_to=r_buf)
                 r_buf.seek(0)
                 retrieval_bufs.append(r_buf)
 
-            rows.append({"model": model, "query": query_buf, "retrievals": retrieval_bufs})
+            pretty_name = model_map.get(model, model)
 
-    # Draw figure
+            rows.append({"model": pretty_name, "query": query_buf, "retrievals": retrieval_bufs})
+
+            models_queries_count[pretty_name] += 1
+    # Reorder rows so that each model's queries appear contiguously
+    grouped = {model_map[m]: [] for m in models}
+
+    for r in rows:
+        grouped[r["model"]].append(r)
+
+    # Flatten the groups in the order: svgvae, multimae, jepa, contrastive
+    ordered_rows = []
+    for m in models:
+        pretty = model_map[m]
+        ordered_rows.extend(grouped[pretty])
+
+    rows = ordered_rows
+
+    # Draw the stacked figure
     make_figure(rows, models_queries_count)
 
 
