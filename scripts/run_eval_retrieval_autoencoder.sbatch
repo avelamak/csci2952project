@@ -4,19 +4,19 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G          # max i can use is 128
 #SBATCH -t 06:00:00
-#SBATCH -o /oscar/home/jshen95/vecssl_eval_auto_%j.txt
+#SBATCH -o .../vecssl_eval_auto_%j.txt
 
 echo "Starting eval at: $(date)"
-cd /oscar/home/jshen95/csci2952project
+cd ...
 
 source .venv/bin/activate
 
 python scripts/eval_retrieval.py \
   --encoder-type autoencoder \
-  --checkpoint /oscar/scratch/zzhan215/exp_fonts_multi/best_model.pt \
-  --svg-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/svg \
-  --img-dir /oscar/scratch/zzhan215/google_fonts_processed_reduced/img \
-  --meta /oscar/scratch/zzhan215/google_fonts_processed_reduced/metadata.csv \
+  --checkpoint ... \
+  --svg-dir ... \
+  --img-dir ... \
+  --meta ... \
   --batch-size 4 \
   --max-seq-len 60 \
   --max-num-groups 8 \
