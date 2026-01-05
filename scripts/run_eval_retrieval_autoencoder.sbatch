@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J vecssl_eval_auto
-#SBATCH -p gpu               # 如果你们 Oscar 分区名不同，改这里
+#SBATCH -p gpu               
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G          # max i can use is 128
 #SBATCH -t 06:00:00
@@ -9,7 +9,6 @@
 echo "Starting eval at: $(date)"
 cd /oscar/home/jshen95/csci2952project
 
-# 激活虚拟环境
 source .venv/bin/activate
 
 python scripts/eval_retrieval.py \
